@@ -36,7 +36,6 @@ router.post("/register", async (req, res) => {
       });
     }
 
-    // Check if user already exists
     const existingEmail = await User.findOne({ email });
     if (existingEmail) {
       return res.status(400).json({
@@ -53,10 +52,8 @@ router.post("/register", async (req, res) => {
       });
     }
 
-    // Generate a random avatar using Dicebear API
     const profileImage = `https://api.dicebear.com/6.x/initials/svg?seed=${username}`;
 
-    // ✅ Create new user (password will be hashed automatically)
     const user = new User({
       username,
       email,
@@ -66,10 +63,8 @@ router.post("/register", async (req, res) => {
 
     await user.save();
 
-    // ✅ Generate JWT token
     const token = createToken(user._id);
 
-    // Send response
     res.status(201).json({
       success: true,
       message: "User registered successfully",
@@ -82,7 +77,6 @@ router.post("/register", async (req, res) => {
       },
     });
   } catch (error) {
-    console.error("Registration error:", error.message);
     res.status(500).json({
       success: false,
       message: error.message || "Server Error",
@@ -94,7 +88,6 @@ router.post("/login", async (req, res) => {
   try {
     const { email, password } = req.body;
 
-    // Validate input
     if (!email || !password) {
       return res.status(400).json({
         success: false,
@@ -102,7 +95,6 @@ router.post("/login", async (req, res) => {
       });
     }
 
-    // Check if user exists
     const user = await User.findOne({ email });
     if (!user) {
       return res.status(400).json({
@@ -111,7 +103,6 @@ router.post("/login", async (req, res) => {
       });
     }
 
-    // Compare password
     const isPasswordCorrect = await user.comparePassword(password);
     if (!isPasswordCorrect) {
       return res.status(400).json({
@@ -120,10 +111,8 @@ router.post("/login", async (req, res) => {
       });
     }
 
-    // Generate token
     const token = createToken(user._id);
 
-    // Send success response
     res.status(200).json({
       success: true,
       message: "Login successful",
@@ -136,7 +125,7 @@ router.post("/login", async (req, res) => {
       },
     });
   } catch (error) {
-    console.error("Login error:", error.message);
+    set({ isLoading: false });
     res.status(500).json({
       success: false,
       message: error.message || "Server Error",
