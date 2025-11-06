@@ -1,4 +1,3 @@
-// routes/authAccount.js
 import express from "express";
 import authMiddleware from "../middleware/auth.js";
 import Account from "../models/Account.js";
@@ -18,21 +17,45 @@ const generateAccountNumber = () => {
 // Get user account
 router.get("/getUserAccount", authMiddleware, async (req, res) => {
   try {
+    console.log("🔍 Getting account for user:", req.user.id);
+
     const account = await Account.findOne({ userId: req.user.id });
 
     if (!account) {
-      return res.status(404).json({ message: "Account not found" });
+      console.log("❌ No account found for user:", req.user.id);
+      return res.status(404).json({
+        success: false,
+        message: "Account not found. Please complete account setup.",
+      });
     }
 
-    res.json(account);
+    console.log("✅ Account found:", account.accountNumber);
+
+    res.json({
+      success: true,
+      accountNumber: account.accountNumber,
+      accountType: account.accountType,
+      balance: account.balance,
+      currency: account.currency,
+      status: account.status,
+      personalInfo: account.personalInfo,
+      contactInfo: account.contactInfo,
+      createdAt: account.createdAt,
+    });
   } catch (err) {
-    res.status(500).json({ message: err.message });
+    console.error("❌ getUserAccount error:", err);
+    res.status(500).json({
+      success: false,
+      message: err.message,
+    });
   }
 });
 
-// NEW: Complete account setup with full details
+// Complete account setup with full details
 router.post("/setup", authMiddleware, async (req, res) => {
   try {
+    console.log("🔧 Setting up account for user:", req.user.id);
+
     const {
       firstName,
       lastName,
@@ -140,6 +163,8 @@ router.post("/setup", authMiddleware, async (req, res) => {
       fullName: `${firstName} ${lastName}`,
     });
 
+    console.log("✅ Account created successfully:", accountNumber);
+
     res.json({
       success: true,
       message: "Account created successfully",
@@ -153,7 +178,7 @@ router.post("/setup", authMiddleware, async (req, res) => {
       },
     });
   } catch (error) {
-    console.error("Account setup error:", error);
+    console.error("❌ Account setup error:", error);
     res.status(500).json({
       success: false,
       message: "Server error. Please try again later.",
@@ -161,7 +186,7 @@ router.post("/setup", authMiddleware, async (req, res) => {
   }
 });
 
-// NEW: Get full account details
+// Get full account details
 router.get("/details", authMiddleware, async (req, res) => {
   try {
     const account = await Account.findOne({ userId: req.user.id });
@@ -192,7 +217,7 @@ router.get("/details", authMiddleware, async (req, res) => {
       },
     });
   } catch (error) {
-    console.error("Get account error:", error);
+    console.error("❌ Get account error:", error);
     res.status(500).json({
       success: false,
       message: "Server error",
@@ -200,7 +225,7 @@ router.get("/details", authMiddleware, async (req, res) => {
   }
 });
 
-// NEW: Update account information
+// Update account information
 router.put("/update", authMiddleware, async (req, res) => {
   try {
     const {
@@ -239,7 +264,7 @@ router.put("/update", authMiddleware, async (req, res) => {
       account,
     });
   } catch (error) {
-    console.error("Update account error:", error);
+    console.error("❌ Update account error:", error);
     res.status(500).json({
       success: false,
       message: "Server error",
@@ -247,9 +272,11 @@ router.put("/update", authMiddleware, async (req, res) => {
   }
 });
 
-// NEW: Check if user has completed account setup
+// Check if user has completed account setup
 router.get("/check", authMiddleware, async (req, res) => {
   try {
+    console.log("🔍 Checking account for user:", req.user.id);
+
     const account = await Account.findOne({ userId: req.user.id });
 
     res.json({
@@ -259,7 +286,7 @@ router.get("/check", authMiddleware, async (req, res) => {
       profileCompleted: account?.personalInfo?.firstName ? true : false,
     });
   } catch (error) {
-    console.error("Check account error:", error);
+    console.error("❌ Check account error:", error);
     res.status(500).json({
       success: false,
       message: "Server error",
@@ -273,21 +300,33 @@ router.patch("/userAccountStatus", authMiddleware, async (req, res) => {
     const { status } = req.body;
 
     if (!["active", "frozen", "closed"].includes(status)) {
-      return res.status(400).json({ message: "Invalid status" });
+      return res.status(400).json({
+        success: false,
+        message: "Invalid status",
+      });
     }
 
     const account = await Account.findOne({ userId: req.user.id });
 
     if (!account) {
-      return res.status(404).json({ message: "Account not found" });
+      return res.status(404).json({
+        success: false,
+        message: "Account not found",
+      });
     }
 
     account.status = status;
     await account.save();
 
-    res.json(account);
+    res.json({
+      success: true,
+      account,
+    });
   } catch (err) {
-    res.status(400).json({ message: err.message });
+    res.status(400).json({
+      success: false,
+      message: err.message,
+    });
   }
 });
 
@@ -299,12 +338,21 @@ router.get("/number/:accountNumber", authMiddleware, async (req, res) => {
     }).select("accountNumber accountType status -_id");
 
     if (!account) {
-      return res.status(404).json({ message: "Account not found" });
+      return res.status(404).json({
+        success: false,
+        message: "Account not found",
+      });
     }
 
-    res.json(account);
+    res.json({
+      success: true,
+      account,
+    });
   } catch (err) {
-    res.status(500).json({ message: err.message });
+    res.status(500).json({
+      success: false,
+      message: err.message,
+    });
   }
 });
 

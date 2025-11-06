@@ -1,5 +1,4 @@
 import express from "express";
-
 import Transaction from "../models/Transaction.js";
 import Account from "../models/Account.js";
 import authMiddleware from "../middleware/auth.js";
@@ -9,31 +8,50 @@ const router = express.Router();
 // Get wallet balance
 router.get("/balance", authMiddleware, async (req, res) => {
   try {
+    console.log("📊 Fetching balance for user:", req.user.id);
+
     const account = await Account.findOne({ userId: req.user.id });
 
     if (!account) {
-      return res.status(404).json({ message: "Account not found" });
+      console.log("❌ Account not found for user:", req.user.id);
+      return res.status(404).json({
+        success: false,
+        message: "Account not found. Please complete account setup.",
+      });
     }
 
+    console.log("✅ Balance fetched successfully:", account.balance);
+
     res.json({
-      balance: account.balance,
-      currency: account.currency,
+      success: true,
+      balance: account.balance || 0,
+      currency: account.currency || "USD",
       accountNumber: account.accountNumber,
       accountType: account.accountType,
       status: account.status,
     });
   } catch (err) {
-    res.status(500).json({ message: err.message });
+    console.error("❌ Balance fetch error:", err);
+    res.status(500).json({
+      success: false,
+      message: err.message,
+    });
   }
 });
 
 // Get wallet statistics
 router.get("/stats", authMiddleware, async (req, res) => {
   try {
+    console.log("📈 Fetching stats for user:", req.user.id);
+
     const account = await Account.findOne({ userId: req.user.id });
 
     if (!account) {
-      return res.status(404).json({ message: "Account not found" });
+      console.log("❌ Account not found for user:", req.user.id);
+      return res.status(404).json({
+        success: false,
+        message: "Account not found",
+      });
     }
 
     const thirtyDaysAgo = new Date();
@@ -55,7 +73,11 @@ router.get("/stats", authMiddleware, async (req, res) => {
           },
         },
         {
-          $group: { _id: null, total: { $sum: "$amount" }, count: { $sum: 1 } },
+          $group: {
+            _id: null,
+            total: { $sum: "$amount" },
+            count: { $sum: 1 },
+          },
         },
       ]),
       Transaction.aggregate([
@@ -68,7 +90,11 @@ router.get("/stats", authMiddleware, async (req, res) => {
           },
         },
         {
-          $group: { _id: null, total: { $sum: "$amount" }, count: { $sum: 1 } },
+          $group: {
+            _id: null,
+            total: { $sum: "$amount" },
+            count: { $sum: 1 },
+          },
         },
       ]),
       Transaction.aggregate([
@@ -81,7 +107,11 @@ router.get("/stats", authMiddleware, async (req, res) => {
           },
         },
         {
-          $group: { _id: null, total: { $sum: "$amount" }, count: { $sum: 1 } },
+          $group: {
+            _id: null,
+            total: { $sum: "$amount" },
+            count: { $sum: 1 },
+          },
         },
       ]),
       Transaction.countDocuments({
@@ -90,9 +120,12 @@ router.get("/stats", authMiddleware, async (req, res) => {
       }),
     ]);
 
+    console.log("✅ Stats fetched successfully");
+
     res.json({
-      currentBalance: account.balance,
-      currency: account.currency,
+      success: true,
+      currentBalance: account.balance || 0,
+      currency: account.currency || "USD",
       last30Days: {
         deposits: {
           total: totalDeposits[0]?.total || 0,
@@ -110,17 +143,27 @@ router.get("/stats", authMiddleware, async (req, res) => {
       },
     });
   } catch (err) {
-    res.status(500).json({ message: err.message });
+    console.error("❌ Stats fetch error:", err);
+    res.status(500).json({
+      success: false,
+      message: err.message,
+    });
   }
 });
 
 // Get recent transactions (last 10)
 router.get("/recent", authMiddleware, async (req, res) => {
   try {
+    console.log("📜 Fetching recent transactions for user:", req.user.id);
+
     const account = await Account.findOne({ userId: req.user.id });
 
     if (!account) {
-      return res.status(404).json({ message: "Account not found" });
+      console.log("❌ Account not found for user:", req.user.id);
+      return res.status(404).json({
+        success: false,
+        message: "Account not found",
+      });
     }
 
     const transactions = await Transaction.find({ accountId: account._id })
@@ -128,9 +171,18 @@ router.get("/recent", authMiddleware, async (req, res) => {
       .limit(10)
       .select("type amount currency status description createdAt reference");
 
-    res.json({ transactions });
+    console.log(`✅ Found ${transactions.length} recent transactions`);
+
+    res.json({
+      success: true,
+      transactions: transactions || [],
+    });
   } catch (err) {
-    res.status(500).json({ message: err.message });
+    console.error("❌ Recent transactions fetch error:", err);
+    res.status(500).json({
+      success: false,
+      message: err.message,
+    });
   }
 });
 
