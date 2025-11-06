@@ -1,4 +1,4 @@
-// routes/accounts.js
+// routes/authAccounts.js
 import express from "express";
 import authMiddleware from "../middleware/auth.js";
 import Account from "../models/Account.js";

@@ -4,7 +4,7 @@ import { connectDB } from "./lib/db.js";
 import authRoutes from "./routes/authRoutes.js";
 import job from "./lib/cron.js";
 import authPayments from "./routes/authPayment.js";
-import authAccounts from "./routes/accounts.js"; // ✅ changed line
+import authAccounts from "./routes/authAccount.js";
 import authTransactions from "./routes/authTransactions.js";
 import authWallet from "./routes/authWallet.js";
 
@@ -17,7 +17,7 @@ app.use(express.json());
 // Routes
 app.use("/api/auth", authRoutes);
 app.use("/api/payments", authPayments);
-app.use("/api/accounts", authAccounts); // ✅ connects /api/accounts/setup
+app.use("/api/accounts", authAccounts);
 app.use("/api/transactions", authTransactions);
 app.use("/api/wallet", authWallet);
 
