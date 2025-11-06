@@ -3,7 +3,7 @@ import "dotenv/config";
 import { connectDB } from "./lib/db.js";
 import authRoutes from "./routes/authRoutes.js";
 import authPayments from "./routes/authPayment.js";
-import authAccounts from "./routes/authAccount.js";
+import authAccount from "./routes/authAccount.js";
 import authTransactions from "./routes/authTransactions.js";
 import authWallet from "./routes/authWallet.js";
 import job from "./lib/cron.js";
@@ -47,7 +47,7 @@ app.get("/", (req, res) => {
 // API Routes
 app.use("/api/auth", authRoutes);
 app.use("/api/payments", authPayments);
-app.use("/api/accounts", authAccounts);
+app.use("/api/accounts", authAccount);
 app.use("/api/transactions", authTransactions);
 app.use("/api/wallet", authWallet);
 
