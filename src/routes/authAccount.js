@@ -1,4 +1,4 @@
-// routes/authAccounts.js
+// routes/authAccount.js
 import express from "express";
 import authMiddleware from "../middleware/auth.js";
 import Account from "../models/Account.js";
@@ -27,41 +27,6 @@ router.get("/getUserAccount", authMiddleware, async (req, res) => {
     res.json(account);
   } catch (err) {
     res.status(500).json({ message: err.message });
-  }
-});
-
-// Create new account (LEGACY - Keep for backwards compatibility)
-router.post("/createNew", authMiddleware, async (req, res) => {
-  try {
-    // Check if account already exists
-    const existingAccount = await Account.findOne({ userId: req.user.id });
-    if (existingAccount) {
-      return res.status(400).json({ message: "Account already exists" });
-    }
-
-    // Generate unique account number
-    let accountNumber;
-    let isUnique = false;
-
-    while (!isUnique) {
-      accountNumber = generateAccountNumber();
-      const existingAccNum = await Account.findOne({ accountNumber });
-      if (!existingAccNum) {
-        isUnique = true;
-      }
-    }
-
-    const account = new Account({
-      userId: req.user.id,
-      accountNumber,
-      accountType: req.body.accountType || "savings",
-      currency: req.body.currency || "GHS",
-    });
-
-    await account.save();
-    res.status(201).json(account);
-  } catch (err) {
-    res.status(400).json({ message: err.message });
   }
 });
 
