@@ -62,9 +62,9 @@ const transactionSchema = new mongoose.Schema({
   },
 });
 
-// Indexes for better query performance
-
-transactionSchema.index({ reference: 1 });
+// ✅ FIXED: Compound index allows same reference for different types
+// This enables: TRF123 (transfer_out) + TRF123 (transfer_in) on same transaction
+transactionSchema.index({ reference: 1, type: 1 }, { unique: true });
 
 const Transaction = mongoose.model("Transaction", transactionSchema);
 export default Transaction;
