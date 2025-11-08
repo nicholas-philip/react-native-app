@@ -1,4 +1,5 @@
-// models/Transaction.js
+// =============== models/Transaction.js ===============
+
 import mongoose from "mongoose";
 
 const transactionSchema = new mongoose.Schema({
@@ -19,7 +20,7 @@ const transactionSchema = new mongoose.Schema({
   },
   currency: {
     type: String,
-    default: "USD",
+    default: "GHS",
   },
   status: {
     type: String,
@@ -29,6 +30,7 @@ const transactionSchema = new mongoose.Schema({
   description: {
     type: String,
     default: "",
+    maxlength: 500,
   },
   recipientAccountId: {
     type: mongoose.Schema.Types.ObjectId,
@@ -48,6 +50,7 @@ const transactionSchema = new mongoose.Schema({
   reference: {
     type: String,
     required: true,
+    index: true,
   },
   metadata: {
     type: Map,
@@ -60,11 +63,22 @@ const transactionSchema = new mongoose.Schema({
   completedAt: {
     type: Date,
   },
+  deletedAt: {
+    type: Date,
+    default: null, // Soft delete
+  },
 });
 
-// ✅ FIXED: Compound index allows same reference for different types
+// FIXED: Compound index allows same reference for different types
 // This enables: TRF123 (transfer_out) + TRF123 (transfer_in) on same transaction
 transactionSchema.index({ reference: 1, type: 1 }, { unique: true });
+transactionSchema.index({ accountId: 1, createdAt: -1 });
+transactionSchema.index({ status: 1 });
+
+// Soft delete query helper
+transactionSchema.query.notDeleted = function () {
+  return this.where({ deletedAt: null });
+};
 
 const Transaction = mongoose.model("Transaction", transactionSchema);
 export default Transaction;

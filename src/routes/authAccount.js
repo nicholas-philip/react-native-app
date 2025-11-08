@@ -2,34 +2,57 @@ import express from "express";
 import authMiddleware from "../middleware/auth.js";
 import Account from "../models/Account.js";
 import User from "../models/user.js";
+import {
+  validatePhoneNumber,
+  validateDateOfBirth,
+  validateIdNumber,
+  validateEmail,
+  sanitizeString,
+  encryptSensitiveData,
+  decryptSensitiveData,
+} from "../utils/helpers.js";
 
 const router = express.Router();
 
-// Generate unique 10-digit account number
-const generateAccountNumber = () => {
-  const prefix = "10"; // Bank prefix
-  const randomDigits = Math.floor(Math.random() * 100000000)
-    .toString()
-    .padStart(8, "0");
-  return prefix + randomDigits;
+// ✅ FIXED: Generate unique 10-digit account number with retry logic
+const generateAccountNumber = async () => {
+  const MAX_RETRIES = 10;
+
+  for (let i = 0; i < MAX_RETRIES; i++) {
+    const prefix = "10"; // Bank prefix
+    const randomDigits = Math.floor(Math.random() * 100000000)
+      .toString()
+      .padStart(8, "0");
+    const accountNumber = prefix + randomDigits;
+
+    // Check if unique
+    const existing = await Account.findOne({ accountNumber });
+    if (!existing) {
+      return accountNumber;
+    }
+  }
+
+  throw new Error(
+    "Failed to generate unique account number. Please try again."
+  );
 };
 
 // Get user account
 router.get("/getUserAccount", authMiddleware, async (req, res) => {
   try {
-    console.log("🔍 Getting account for user:", req.user.id);
+    console.log(`[${req.id}] 🔍 Getting account for user:`, req.user.id);
 
     const account = await Account.findOne({ userId: req.user.id });
 
     if (!account) {
-      console.log("❌ No account found for user:", req.user.id);
+      console.log(`[${req.id}] ❌ No account found for user:`, req.user.id);
       return res.status(404).json({
         success: false,
         message: "Account not found. Please complete account setup.",
       });
     }
 
-    console.log("✅ Account found:", account.accountNumber);
+    console.log(`[${req.id}] ✅ Account found:`, account.accountNumber);
 
     res.json({
       success: true,
@@ -38,12 +61,15 @@ router.get("/getUserAccount", authMiddleware, async (req, res) => {
       balance: account.balance,
       currency: account.currency,
       status: account.status,
-      personalInfo: account.personalInfo,
-      contactInfo: account.contactInfo,
+      verificationLevel: account.verificationLevel,
+      personalInfo: {
+        firstName: account.personalInfo.firstName,
+        lastName: account.personalInfo.lastName,
+      },
       createdAt: account.createdAt,
     });
   } catch (err) {
-    console.error("❌ getUserAccount error:", err);
+    console.error(`[${req.id}] ❌ getUserAccount error:`, err);
     res.status(500).json({
       success: false,
       message: err.message,
@@ -54,7 +80,7 @@ router.get("/getUserAccount", authMiddleware, async (req, res) => {
 // Complete account setup with full details
 router.post("/setup", authMiddleware, async (req, res) => {
   try {
-    console.log("🔧 Setting up account for user:", req.user.id);
+    console.log(`[${req.id}] 🔧 Setting up account for user:`, req.user.id);
 
     const {
       firstName,
@@ -72,7 +98,7 @@ router.post("/setup", authMiddleware, async (req, res) => {
       monthlyIncome,
     } = req.body;
 
-    // Validation
+    // ✅ INPUT VALIDATION
     if (!firstName || !lastName || !dateOfBirth) {
       return res.status(400).json({
         success: false,
@@ -80,28 +106,73 @@ router.post("/setup", authMiddleware, async (req, res) => {
       });
     }
 
-    if (!phoneNumber || !address || !city || !state || !country) {
+    // Validate name (alphanumeric + spaces, max 50 chars)
+    const nameRegex = /^[a-zA-Z\s'-]{2,50}$/;
+    if (!nameRegex.test(firstName) || !nameRegex.test(lastName)) {
+      return res.status(400).json({
+        success: false,
+        message: "Invalid first or last name",
+      });
+    }
+
+    // Validate date of birth
+    const dobValidation = validateDateOfBirth(dateOfBirth);
+    if (!dobValidation.valid) {
+      return res.status(400).json({
+        success: false,
+        message: dobValidation.error,
+      });
+    }
+
+    // Validate phone number
+    const phoneValidation = validatePhoneNumber(phoneNumber);
+    if (!phoneValidation.valid) {
+      return res.status(400).json({
+        success: false,
+        message: phoneValidation.error,
+      });
+    }
+
+    // Validate address
+    if (!address || address.length < 5 || address.length > 200) {
+      return res.status(400).json({
+        success: false,
+        message: "Address must be between 5 and 200 characters",
+      });
+    }
+
+    if (!city || !state || !country) {
       return res.status(400).json({
         success: false,
         message: "Please provide all contact information",
       });
     }
 
-    if (!idType || !idNumber) {
+    // Validate ID
+    const idValidation = validateIdNumber(idNumber, idType);
+    if (!idValidation.valid) {
       return res.status(400).json({
         success: false,
-        message: "Please provide valid identification",
+        message: idValidation.error,
       });
     }
 
-    if (!occupation || !monthlyIncome) {
+    // Validate occupation and income
+    if (!occupation || occupation.length < 2 || occupation.length > 100) {
       return res.status(400).json({
         success: false,
-        message: "Please provide employment information",
+        message: "Please provide valid employment information",
       });
     }
 
-    // Check if user already has an account
+    if (!monthlyIncome || monthlyIncome < 0 || monthlyIncome > 10000000) {
+      return res.status(400).json({
+        success: false,
+        message: "Please provide valid monthly income",
+      });
+    }
+
+    // ✅ Check if user already has an account
     const existingAccount = await Account.findOne({ userId: req.user.id });
     if (existingAccount) {
       return res.status(400).json({
@@ -110,19 +181,18 @@ router.post("/setup", authMiddleware, async (req, res) => {
       });
     }
 
-    // Generate unique account number
+    // ✅ FIXED: Generate unique account number with proper retry
     let accountNumber;
-    let isUnique = false;
-
-    while (!isUnique) {
-      accountNumber = generateAccountNumber();
-      const existingAccNum = await Account.findOne({ accountNumber });
-      if (!existingAccNum) {
-        isUnique = true;
-      }
+    try {
+      accountNumber = await generateAccountNumber();
+    } catch (err) {
+      return res.status(500).json({
+        success: false,
+        message: err.message,
+      });
     }
 
-    // Create new account
+    // ✅ Create new account with encrypted sensitive data
     const account = new Account({
       userId: req.user.id,
       accountNumber,
@@ -131,27 +201,28 @@ router.post("/setup", authMiddleware, async (req, res) => {
       currency: "GHS",
       status: "active",
       personalInfo: {
-        firstName,
-        lastName,
-        dateOfBirth,
+        firstName: sanitizeString(firstName, 50),
+        lastName: sanitizeString(lastName, 50),
+        dateOfBirth: dobValidation.dateOfBirth,
       },
       contactInfo: {
-        phoneNumber,
-        address,
-        city,
-        state,
-        postalCode,
-        country,
+        phoneNumber: encryptSensitiveData(phoneValidation.phoneNumber),
+        address: sanitizeString(address, 200),
+        city: sanitizeString(city, 100),
+        state: sanitizeString(state, 100),
+        postalCode: sanitizeString(postalCode, 20),
+        country: sanitizeString(country, 100) || "Ghana",
       },
       identification: {
         idType,
-        idNumber,
+        idNumber: encryptSensitiveData(idValidation.idNumber),
         verified: false,
       },
       employment: {
-        occupation,
+        occupation: sanitizeString(occupation, 100),
         monthlyIncome,
       },
+      verificationLevel: "basic",
     });
 
     await account.save();
@@ -163,7 +234,7 @@ router.post("/setup", authMiddleware, async (req, res) => {
       fullName: `${firstName} ${lastName}`,
     });
 
-    console.log("✅ Account created successfully:", accountNumber);
+    console.log(`[${req.id}] ✅ Account created successfully:`, accountNumber);
 
     res.json({
       success: true,
@@ -175,10 +246,20 @@ router.post("/setup", authMiddleware, async (req, res) => {
         balance: account.balance,
         currency: account.currency,
         status: account.status,
+        verificationLevel: account.verificationLevel,
       },
     });
   } catch (error) {
-    console.error("❌ Account setup error:", error);
+    console.error(`[${req.id}] ❌ Account setup error:`, error);
+
+    // Handle duplicate key error
+    if (error.code === 11000) {
+      return res.status(400).json({
+        success: false,
+        message: "Account already exists with this information",
+      });
+    }
+
     res.status(500).json({
       success: false,
       message: "Server error. Please try again later.",
@@ -198,6 +279,7 @@ router.get("/details", authMiddleware, async (req, res) => {
       });
     }
 
+    // ✅ Decrypt sensitive data for display
     res.json({
       success: true,
       account: {
@@ -206,10 +288,23 @@ router.get("/details", authMiddleware, async (req, res) => {
         balance: account.balance,
         currency: account.currency,
         status: account.status,
-        personalInfo: account.personalInfo,
-        contactInfo: account.contactInfo,
+        verificationLevel: account.verificationLevel,
+        personalInfo: {
+          firstName: account.personalInfo.firstName,
+          lastName: account.personalInfo.lastName,
+          dateOfBirth: account.personalInfo.dateOfBirth,
+        },
+        contactInfo: {
+          phoneNumber: decryptSensitiveData(account.contactInfo.phoneNumber),
+          address: account.contactInfo.address,
+          city: account.contactInfo.city,
+          state: account.contactInfo.state,
+          postalCode: account.contactInfo.postalCode,
+          country: account.contactInfo.country,
+        },
         identification: {
           idType: account.identification?.idType,
+          idNumber: decryptSensitiveData(account.identification?.idNumber),
           verified: account.identification?.verified,
         },
         employment: account.employment,
@@ -217,7 +312,7 @@ router.get("/details", authMiddleware, async (req, res) => {
       },
     });
   } catch (error) {
-    console.error("❌ Get account error:", error);
+    console.error(`[${req.id}] ❌ Get account error:`, error);
     res.status(500).json({
       success: false,
       message: "Server error",
@@ -247,24 +342,74 @@ router.put("/update", authMiddleware, async (req, res) => {
       });
     }
 
-    // Update allowed fields
-    if (phoneNumber) account.contactInfo.phoneNumber = phoneNumber;
-    if (address) account.contactInfo.address = address;
-    if (city) account.contactInfo.city = city;
-    if (state) account.contactInfo.state = state;
-    if (postalCode) account.contactInfo.postalCode = postalCode;
-    if (occupation) account.employment.occupation = occupation;
-    if (monthlyIncome) account.employment.monthlyIncome = monthlyIncome;
+    // ✅ VALIDATE AND UPDATE allowed fields
+    if (phoneNumber) {
+      const phoneValidation = validatePhoneNumber(phoneNumber);
+      if (!phoneValidation.valid) {
+        return res.status(400).json({
+          success: false,
+          message: phoneValidation.error,
+        });
+      }
+      account.contactInfo.phoneNumber = encryptSensitiveData(
+        phoneValidation.phoneNumber
+      );
+    }
+
+    if (address) {
+      if (address.length < 5 || address.length > 200) {
+        return res.status(400).json({
+          success: false,
+          message: "Address must be between 5 and 200 characters",
+        });
+      }
+      account.contactInfo.address = sanitizeString(address, 200);
+    }
+
+    if (city) {
+      account.contactInfo.city = sanitizeString(city, 100);
+    }
+
+    if (state) {
+      account.contactInfo.state = sanitizeString(state, 100);
+    }
+
+    if (postalCode) {
+      account.contactInfo.postalCode = sanitizeString(postalCode, 20);
+    }
+
+    if (occupation) {
+      if (occupation.length < 2 || occupation.length > 100) {
+        return res.status(400).json({
+          success: false,
+          message: "Occupation must be between 2 and 100 characters",
+        });
+      }
+      account.employment.occupation = sanitizeString(occupation, 100);
+    }
+
+    if (monthlyIncome !== undefined) {
+      if (monthlyIncome < 0 || monthlyIncome > 10000000) {
+        return res.status(400).json({
+          success: false,
+          message: "Invalid monthly income",
+        });
+      }
+      account.employment.monthlyIncome = monthlyIncome;
+    }
 
     await account.save();
 
     res.json({
       success: true,
       message: "Account updated successfully",
-      account,
+      account: {
+        accountNumber: account.accountNumber,
+        status: account.status,
+      },
     });
   } catch (error) {
-    console.error("❌ Update account error:", error);
+    console.error(`[${req.id}] ❌ Update account error:`, error);
     res.status(500).json({
       success: false,
       message: "Server error",
@@ -275,7 +420,7 @@ router.put("/update", authMiddleware, async (req, res) => {
 // Check if user has completed account setup
 router.get("/check", authMiddleware, async (req, res) => {
   try {
-    console.log("🔍 Checking account for user:", req.user.id);
+    console.log(`[${req.id}] 🔍 Checking account for user:`, req.user.id);
 
     const account = await Account.findOne({ userId: req.user.id });
 
@@ -284,9 +429,10 @@ router.get("/check", authMiddleware, async (req, res) => {
       hasAccount: !!account,
       accountNumber: account?.accountNumber || null,
       profileCompleted: account?.personalInfo?.firstName ? true : false,
+      status: account?.status || null,
     });
   } catch (error) {
-    console.error("❌ Check account error:", error);
+    console.error(`[${req.id}] ❌ Check account error:`, error);
     res.status(500).json({
       success: false,
       message: "Server error",
@@ -302,7 +448,7 @@ router.patch("/userAccountStatus", authMiddleware, async (req, res) => {
     if (!["active", "frozen", "closed"].includes(status)) {
       return res.status(400).json({
         success: false,
-        message: "Invalid status",
+        message: "Invalid status. Must be: active, frozen, or closed",
       });
     }
 
@@ -315,14 +461,24 @@ router.patch("/userAccountStatus", authMiddleware, async (req, res) => {
       });
     }
 
+    const previousStatus = account.status;
     account.status = status;
     await account.save();
 
+    console.log(
+      `[${req.id}] 📝 Account status updated:`,
+      previousStatus,
+      "->",
+      status
+    );
+
     res.json({
       success: true,
-      account,
+      message: `Account status changed from ${previousStatus} to ${status}`,
+      status: account.status,
     });
   } catch (err) {
+    console.error(`[${req.id}] ❌ Status update error:`, err.message);
     res.status(400).json({
       success: false,
       message: err.message,
@@ -344,11 +500,19 @@ router.get("/number/:accountNumber", authMiddleware, async (req, res) => {
       });
     }
 
+    if (account.status !== "active") {
+      return res.status(400).json({
+        success: false,
+        message: "Account is not active",
+      });
+    }
+
     res.json({
       success: true,
       account,
     });
   } catch (err) {
+    console.error(`[${req.id}] ❌ Account lookup error:`, err.message);
     res.status(500).json({
       success: false,
       message: err.message,

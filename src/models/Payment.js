@@ -1,4 +1,4 @@
-// models/Payment.js
+// =============== models/Payment.js ===============
 import mongoose from "mongoose";
 
 const paymentSchema = new mongoose.Schema({
@@ -57,7 +57,6 @@ const paymentSchema = new mongoose.Schema({
 });
 
 // Indexes for fast lookups
-
 paymentSchema.index({ accountId: 1, createdAt: -1 });
 
 const Payment = mongoose.model("Payment", paymentSchema);

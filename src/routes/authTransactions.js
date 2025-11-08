@@ -1,12 +1,10 @@
-// ================== FILE: routes/authTransactions.js ==================
-// UPDATED TRANSFER ROUTE - Reference generated on backend
-
+// ================== routes/authTransactions.js (COMPLETE) ==================
 import express from "express";
 import mongoose from "mongoose";
 import Transaction from "../models/Transaction.js";
 import Account from "../models/Account.js";
 import authMiddleware from "../middleware/auth.js";
-import { generateReference } from "../utils/helpers.js"; // ✅ Use helper
+import { generateReference } from "../utils/helpers.js";
 
 const router = express.Router();
 
@@ -15,7 +13,10 @@ router.get("/history", authMiddleware, async (req, res) => {
   try {
     const account = await Account.findOne({ userId: req.user.id });
     if (!account) {
-      return res.status(404).json({ message: "Account not found" });
+      return res.status(404).json({
+        success: false,
+        message: "Account not found",
+      });
     }
 
     const { page = 1, limit = 20, type, status } = req.query;
@@ -32,13 +33,17 @@ router.get("/history", authMiddleware, async (req, res) => {
     const count = await Transaction.countDocuments(query);
 
     res.json({
+      success: true,
       transactions,
       totalPages: Math.ceil(count / limit),
       currentPage: parseInt(page),
       total: count,
     });
   } catch (err) {
-    res.status(500).json({ message: err.message });
+    res.status(500).json({
+      success: false,
+      message: err.message,
+    });
   }
 });
 
@@ -52,16 +57,25 @@ router.get("/:id", authMiddleware, async (req, res) => {
     });
 
     if (!transaction) {
-      return res.status(404).json({ message: "Transaction not found" });
+      return res.status(404).json({
+        success: false,
+        message: "Transaction not found",
+      });
     }
 
-    res.json(transaction);
+    res.json({
+      success: true,
+      transaction,
+    });
   } catch (err) {
-    res.status(500).json({ message: err.message });
+    res.status(500).json({
+      success: false,
+      message: err.message,
+    });
   }
 });
 
-// Deposit money
+// ✅ DEPOSIT money
 router.post("/deposit", authMiddleware, async (req, res) => {
   const session = await mongoose.startSession();
   session.startTransaction();
@@ -97,7 +111,7 @@ router.post("/deposit", authMiddleware, async (req, res) => {
       description: description || "Deposit",
       balanceBefore,
       balanceAfter,
-      reference: generateReference("deposit"), // ✅ Generate on backend
+      reference: generateReference("deposit"),
       completedAt: new Date(),
     });
 
@@ -106,18 +120,23 @@ router.post("/deposit", authMiddleware, async (req, res) => {
 
     await session.commitTransaction();
     res.status(201).json({
+      success: true,
+      message: "Deposit completed successfully",
       transaction,
       newBalance: account.balance,
     });
   } catch (err) {
     await session.abortTransaction();
-    res.status(400).json({ message: err.message });
+    res.status(400).json({
+      success: false,
+      message: err.message,
+    });
   } finally {
     session.endSession();
   }
 });
 
-// Withdraw money
+// ✅ WITHDRAW money
 router.post("/withdraw", authMiddleware, async (req, res) => {
   const session = await mongoose.startSession();
   session.startTransaction();
@@ -157,7 +176,7 @@ router.post("/withdraw", authMiddleware, async (req, res) => {
       description: description || "Withdrawal",
       balanceBefore,
       balanceAfter,
-      reference: generateReference("withdrawal"), // ✅ Generate on backend
+      reference: generateReference("withdrawal"),
       completedAt: new Date(),
     });
 
@@ -166,18 +185,23 @@ router.post("/withdraw", authMiddleware, async (req, res) => {
 
     await session.commitTransaction();
     res.status(201).json({
+      success: true,
+      message: "Withdrawal completed successfully",
       transaction,
       newBalance: account.balance,
     });
   } catch (err) {
     await session.abortTransaction();
-    res.status(400).json({ message: err.message });
+    res.status(400).json({
+      success: false,
+      message: err.message,
+    });
   } finally {
     session.endSession();
   }
 });
 
-// ✅ FIXED: Transfer money to another account
+// ✅ TRANSFER money to another account
 router.post("/transfer", authMiddleware, async (req, res) => {
   const session = await mongoose.startSession();
   session.startTransaction();
@@ -224,7 +248,6 @@ router.post("/transfer", authMiddleware, async (req, res) => {
       throw new Error("Insufficient funds");
     }
 
-    // ✅ Generate reference ONCE on backend
     const transferRef = generateReference("transfer");
 
     // Debit sender
@@ -239,11 +262,9 @@ router.post("/transfer", authMiddleware, async (req, res) => {
       currency: senderAccount.currency,
       status: "completed",
       description: description || `Transfer to ${recipientAccountNumber}`,
-      recipientAccountId: recipientAccount._id,
-      recipientAccountNumber,
       balanceBefore: senderBalanceBefore,
       balanceAfter: senderBalanceAfter,
-      reference: transferRef, // ✅ Same reference
+      reference: transferRef,
       completedAt: new Date(),
     });
 
@@ -262,7 +283,7 @@ router.post("/transfer", authMiddleware, async (req, res) => {
         description || `Transfer from ${senderAccount.accountNumber}`,
       balanceBefore: recipientBalanceBefore,
       balanceAfter: recipientBalanceAfter,
-      reference: transferRef, // ✅ Same reference
+      reference: transferRef,
       completedAt: new Date(),
     });
 
@@ -273,6 +294,8 @@ router.post("/transfer", authMiddleware, async (req, res) => {
 
     await session.commitTransaction();
     res.status(201).json({
+      success: true,
+      message: "Transfer completed successfully",
       transaction: senderTransaction,
       newBalance: senderAccount.balance,
       recipient: {
@@ -282,7 +305,10 @@ router.post("/transfer", authMiddleware, async (req, res) => {
     });
   } catch (err) {
     await session.abortTransaction();
-    res.status(400).json({ message: err.message });
+    res.status(400).json({
+      success: false,
+      message: err.message,
+    });
   } finally {
     session.endSession();
   }
