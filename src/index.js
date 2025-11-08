@@ -66,7 +66,7 @@ app.use((req, res) => {
       "GET /api/accounts/check",
       "GET /api/accounts/details",
       "PUT /api/accounts/update",
-      "GET /api/transactions",
+      "GET /api/transactions/history",
       "POST /api/transactions/deposit",
       "POST /api/transactions/withdraw",
       "POST /api/transactions/transfer",

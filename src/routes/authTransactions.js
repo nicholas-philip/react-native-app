@@ -8,7 +8,7 @@ import authMiddleware from "../middleware/auth.js";
 const router = express.Router();
 
 // Get transaction history with pagination
-router.get("/", authMiddleware, async (req, res) => {
+router.get("/history", authMiddleware, async (req, res) => {
   try {
     const account = await Account.findOne({ userId: req.user.id });
     if (!account) {
