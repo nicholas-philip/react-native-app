@@ -1,9 +1,12 @@
-// routes/transactions.js
+// ================== FILE: routes/authTransactions.js ==================
+// UPDATED TRANSFER ROUTE - Reference generated on backend
+
 import express from "express";
 import mongoose from "mongoose";
 import Transaction from "../models/Transaction.js";
 import Account from "../models/Account.js";
 import authMiddleware from "../middleware/auth.js";
+import { generateReference } from "../utils/helpers.js"; // ✅ Use helper
 
 const router = express.Router();
 
@@ -94,10 +97,7 @@ router.post("/deposit", authMiddleware, async (req, res) => {
       description: description || "Deposit",
       balanceBefore,
       balanceAfter,
-      reference:
-        "DEP" +
-        Date.now() +
-        Math.random().toString(36).substr(2, 9).toUpperCase(),
+      reference: generateReference("deposit"), // ✅ Generate on backend
       completedAt: new Date(),
     });
 
@@ -157,10 +157,7 @@ router.post("/withdraw", authMiddleware, async (req, res) => {
       description: description || "Withdrawal",
       balanceBefore,
       balanceAfter,
-      reference:
-        "WDR" +
-        Date.now() +
-        Math.random().toString(36).substr(2, 9).toUpperCase(),
+      reference: generateReference("withdrawal"), // ✅ Generate on backend
       completedAt: new Date(),
     });
 
@@ -180,7 +177,7 @@ router.post("/withdraw", authMiddleware, async (req, res) => {
   }
 });
 
-// Transfer money to another account
+// ✅ FIXED: Transfer money to another account
 router.post("/transfer", authMiddleware, async (req, res) => {
   const session = await mongoose.startSession();
   session.startTransaction();
@@ -227,10 +224,8 @@ router.post("/transfer", authMiddleware, async (req, res) => {
       throw new Error("Insufficient funds");
     }
 
-    const transferRef =
-      "TRF" +
-      Date.now() +
-      Math.random().toString(36).substr(2, 9).toUpperCase();
+    // ✅ Generate reference ONCE on backend
+    const transferRef = generateReference("transfer");
 
     // Debit sender
     const senderBalanceBefore = senderAccount.balance;
@@ -248,7 +243,7 @@ router.post("/transfer", authMiddleware, async (req, res) => {
       recipientAccountNumber,
       balanceBefore: senderBalanceBefore,
       balanceAfter: senderBalanceAfter,
-      reference: transferRef,
+      reference: transferRef, // ✅ Same reference
       completedAt: new Date(),
     });
 
@@ -267,7 +262,7 @@ router.post("/transfer", authMiddleware, async (req, res) => {
         description || `Transfer from ${senderAccount.accountNumber}`,
       balanceBefore: recipientBalanceBefore,
       balanceAfter: recipientBalanceAfter,
-      reference: transferRef,
+      reference: transferRef, // ✅ Same reference
       completedAt: new Date(),
     });
 
