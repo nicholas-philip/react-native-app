@@ -88,33 +88,114 @@ export const validatePhoneNumber = (phoneNumber) => {
     };
   }
 
-  // Remove spaces, dashes, and parentheses
+  // Remove spaces, dashes, parentheses
   const cleaned = phoneNumber.replace(/[\s\-\(\)]/g, "");
 
-  // Ghana phone formats:
-  // Local: 0XXXXXXXXX
-  // International: +233XXXXXXXXX or 233XXXXXXXXX
-  const ghanaPhoneRegex =
-    /^(?:\+?233|0)(?:20|23|24|25|26|27|28|29|50|54|55|56|57|58|59)\d{6}$/;
+  // Ghana phone validation:
+  // Format 1: +233XXXXXXXXX (must be exactly 13 chars: +233 + 9 digits)
+  // Format 2: 0XXXXXXXXX (must be exactly 10 chars: 0 + 9 digits)
+  // Valid operator prefixes: 20,23,24,25,26,27,28,29,50,54,55,56,57,58,59
 
-  if (!ghanaPhoneRegex.test(cleaned)) {
-    return {
-      valid: false,
-      error: "Invalid Ghana phone number format",
-    };
+  let isValid = false;
+  let formatted = cleaned;
+
+  // Check international format: +233XXXXXXXXX
+  if (cleaned.startsWith("+233")) {
+    if (cleaned.length === 13) {
+      const digits = cleaned.substring(4); // Get 9 digits after +233
+      const operatorCode = digits.substring(0, 2);
+      const validOperators = [
+        "20",
+        "23",
+        "24",
+        "25",
+        "26",
+        "27",
+        "28",
+        "29", // Vodafone, MTN, etc.
+        "50",
+        "54",
+        "55",
+        "56",
+        "57",
+        "58",
+        "59", // AirtelTigo, others
+      ];
+
+      if (validOperators.includes(operatorCode) && /^\d{9}$/.test(digits)) {
+        isValid = true;
+        formatted = cleaned; // Already in correct format
+      }
+    }
+  }
+  // Check local format: 0XXXXXXXXX
+  else if (cleaned.startsWith("0")) {
+    if (cleaned.length === 10) {
+      const operatorCode = cleaned.substring(1, 3);
+      const validOperators = [
+        "20",
+        "23",
+        "24",
+        "25",
+        "26",
+        "27",
+        "28",
+        "29",
+        "50",
+        "54",
+        "55",
+        "56",
+        "57",
+        "58",
+        "59",
+      ];
+
+      if (validOperators.includes(operatorCode) && /^\d{10}$/.test(cleaned)) {
+        isValid = true;
+        // Convert to international format
+        formatted = "+233" + cleaned.substring(1); // Remove 0, add +233
+      }
+    }
+  }
+  // Check 233 format (no +): 233XXXXXXXXX
+  else if (cleaned.startsWith("233") && cleaned.length === 12) {
+    const digits = cleaned.substring(3); // Get 9 digits after 233
+    const operatorCode = digits.substring(0, 2);
+    const validOperators = [
+      "20",
+      "23",
+      "24",
+      "25",
+      "26",
+      "27",
+      "28",
+      "29",
+      "50",
+      "54",
+      "55",
+      "56",
+      "57",
+      "58",
+      "59",
+    ];
+
+    if (validOperators.includes(operatorCode) && /^\d{9}$/.test(digits)) {
+      isValid = true;
+      formatted = "+" + cleaned; // Add + prefix
+    }
   }
 
-  // Normalize to +233 format
-  let formatted = cleaned;
-  if (formatted.startsWith("0")) {
-    formatted = "+233" + formatted.substring(1);
-  } else if (formatted.startsWith("233")) {
-    formatted = "+" + formatted;
+  if (!isValid) {
+    return {
+      valid: false,
+      error:
+        "Invalid Ghana phone number. Use format: +233XXXXXXXXX or 0XXXXXXXXX",
+    };
   }
 
   return {
     valid: true,
-    phoneNumber: formatted,
+    phoneNumber: formatted, // Normalized to +233 format
   };
 };
 
