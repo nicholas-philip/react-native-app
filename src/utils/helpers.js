@@ -1,4 +1,4 @@
-// =============== utils/helpers.js (COMPLETE - SIMPLIFIED ID VALIDATION) ===============
+// =============== utils/helpers.js (UPDATED - FIXED GHANA PHONE VALIDATION) ===============
 import crypto from "crypto";
 
 // ✅ ENCRYPTION/DECRYPTION for PII
@@ -79,7 +79,7 @@ export const validateAmount = (amount) => {
   };
 };
 
-// ✅ PHONE NUMBER VALIDATION for Ghana networks
+// ✅ FIXED PHONE NUMBER VALIDATION for Ghana networks
 export const validatePhoneNumber = (phoneNumber) => {
   if (!phoneNumber || typeof phoneNumber !== "string") {
     return {
@@ -88,11 +88,14 @@ export const validatePhoneNumber = (phoneNumber) => {
     };
   }
 
-  // Remove spaces and dashes
-  const cleaned = phoneNumber.replace(/[\s\-]/g, "");
+  // Remove spaces, dashes, and parentheses
+  const cleaned = phoneNumber.replace(/[\s\-\(\)]/g, "");
 
-  // Ghana phone numbers: +233XXXXXXXXX or 0XXXXXXXXX
-  const ghanaPhoneRegex = /^(?:\+233|0)(?:2[0-4]|5[0-9]|9[0-9])\d{7}$/;
+  // Ghana phone formats:
+  // Local: 0XXXXXXXXX
+  // International: +233XXXXXXXXX or 233XXXXXXXXX
+  const ghanaPhoneRegex =
+    /^(?:\+?233|0)(?:20|23|24|25|26|27|28|29|50|54|55|56|57|58|59)\d{6}$/;
 
   if (!ghanaPhoneRegex.test(cleaned)) {
     return {
@@ -101,9 +104,17 @@ export const validatePhoneNumber = (phoneNumber) => {
     };
   }
 
+  // Normalize to +233 format
+  let formatted = cleaned;
+  if (formatted.startsWith("0")) {
+    formatted = "+233" + formatted.substring(1);
+  } else if (formatted.startsWith("233")) {
+    formatted = "+" + formatted;
+  }
+
   return {
     valid: true,
-    phoneNumber: cleaned,
+    phoneNumber: formatted,
   };
 };
 
@@ -144,7 +155,7 @@ export const sanitizeString = (str, maxLength = 500) => {
 
   // Remove HTML tags and dangerous characters
   let sanitized = str
-    .replace(/<[^>]*>/g, "") // Remove HTML tags
+    .replace(/<[^>]*>/g, "")
     .replace(/[<>"'&]/g, (char) => {
       const entities = {
         "<": "&lt;",
@@ -157,7 +168,6 @@ export const sanitizeString = (str, maxLength = 500) => {
     })
     .trim();
 
-  // Truncate to max length
   if (sanitized.length > maxLength) {
     sanitized = sanitized.substring(0, maxLength);
   }
@@ -165,7 +175,7 @@ export const sanitizeString = (str, maxLength = 500) => {
   return sanitized;
 };
 
-// ✅ REFERENCE GENERATION (with timestamp + random)
+// ✅ REFERENCE GENERATION
 export const generateReference = (type) => {
   const typeMap = {
     deposit: "DEP",
@@ -183,7 +193,6 @@ export const generateReference = (type) => {
 // ✅ IDEMPOTENCY KEY VALIDATION
 export const validateIdempotencyKey = (key) => {
   if (!key) return false;
-  // Idempotency key should be UUID format or similar
   return /^[a-f0-9\-]{36}$|^[a-zA-Z0-9\-_]{20,}$/.test(key);
 };
 
@@ -243,7 +252,7 @@ export const validateDateOfBirth = (date) => {
   };
 };
 
-// ✅ SIMPLIFIED ID NUMBER VALIDATION - No complex format rules
+// ✅ SIMPLIFIED ID NUMBER VALIDATION
 export const validateIdNumber = (idNumber, idType) => {
   if (!idNumber || typeof idNumber !== "string") {
     return {
@@ -252,10 +261,8 @@ export const validateIdNumber = (idNumber, idType) => {
     };
   }
 
-  // Remove extra spaces
   const cleaned = idNumber.trim();
 
-  // Basic length check: 5-50 characters
   if (cleaned.length < 5) {
     return {
       valid: false,
@@ -270,8 +277,6 @@ export const validateIdNumber = (idNumber, idType) => {
     };
   }
 
-  // Accept any alphanumeric characters, spaces, and dashes
-  // Remove this check if you want to allow ANY characters
   if (!/^[A-Za-z0-9\s\-]+$/.test(cleaned)) {
     return {
       valid: false,
@@ -281,11 +286,11 @@ export const validateIdNumber = (idNumber, idType) => {
 
   return {
     valid: true,
-    idNumber: cleaned, // Return as-is (keep original format)
+    idNumber: cleaned,
   };
 };
 
-// ✅ MONTH/YEAR VALIDATION (for credit card expiry)
+// ✅ MONTH/YEAR VALIDATION
 export const validateMonthYear = (month, year) => {
   if (!month || !year) {
     return {
@@ -296,6 +301,9 @@ export const validateMonthYear = (month, year) => {
 
   const m = parseInt(month);
   const y = parseInt(year);
+  const now = new Date();
+  const currentYear = now.getFullYear();
+  const currentMonth = now.getMonth() + 1;
 
   if (m < 1 || m > 12) {
     return {
@@ -303,10 +311,6 @@ export const validateMonthYear = (month, year) => {
       error: "Invalid month",
     };
   }
-
-  const now = new Date();
-  const currentYear = now.getFullYear();
-  const currentMonth = now.getMonth() + 1;
 
   if (y < currentYear || (y === currentYear && m < currentMonth)) {
     return {
@@ -325,7 +329,7 @@ export const validateMonthYear = (month, year) => {
 // ✅ PAGINATION VALIDATION
 export const validatePagination = (page, limit) => {
   const validPage = Math.max(parseInt(page) || 1, 1);
-  const validLimit = Math.min(Math.max(parseInt(limit) || 20, 1), 100); // Max 100 per page
+  const validLimit = Math.min(Math.max(parseInt(limit) || 20, 1), 100);
 
   return {
     page: validPage,
@@ -334,7 +338,7 @@ export const validatePagination = (page, limit) => {
   };
 };
 
-// ✅ HTTP STATUS CODE MESSAGE MAPPING
+// ✅ STATUS MESSAGE
 export const getStatusMessage = (statusCode) => {
   const messages = {
     400: "Bad request",
@@ -347,7 +351,7 @@ export const getStatusMessage = (statusCode) => {
   return messages[statusCode] || "Error";
 };
 
-// ✅ LOG UTILITY (with request ID)
+// ✅ LOG UTILITY
 export const logTransaction = (requestId, message, data = {}) => {
   console.log(`[${requestId}] ${message}`, data);
 };
