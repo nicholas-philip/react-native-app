@@ -1,152 +1,173 @@
+// =============== models/Account.js (COMPLETE REPLACEMENT) ===============
 import mongoose from "mongoose";
 
-const accountSchema = new mongoose.Schema({
-  userId: {
-    type: mongoose.Schema.Types.ObjectId,
-    ref: "User",
-    required: true,
-    unique: true,
-  },
-  accountNumber: {
-    type: String,
-    required: true,
-    unique: true,
-    sparse: true,
-    index: true,
-  },
-  accountType: {
-    type: String,
-    enum: ["savings", "checking"],
-    default: "savings",
-  },
-  balance: {
-    type: Number,
-    default: 0,
-    min: 0,
-  },
-  currency: {
-    type: String,
-    default: "GHS",
-  },
-  status: {
-    type: String,
-    enum: ["active", "frozen", "closed"],
-    default: "active",
-    index: true,
-  },
-  personalInfo: {
-    firstName: {
+const accountSchema = new mongoose.Schema(
+  {
+    userId: {
+      type: mongoose.Schema.Types.ObjectId,
+      ref: "User",
+      required: true,
+      unique: true,
+    },
+    accountNumber: {
       type: String,
       required: true,
+      unique: true,
+      trim: true,
+      index: true,
     },
-    lastName: {
+    accountType: {
       type: String,
-      required: true,
+      enum: ["savings", "checking", "business"],
+      default: "savings",
     },
-    dateOfBirth: {
-      type: Date,
-      required: true,
-    },
-  },
-  contactInfo: {
-    phoneNumber: {
-      type: String,
-      required: true,
-      // ✅ Store encrypted
-    },
-    address: {
-      type: String,
-      required: true,
-    },
-    city: {
-      type: String,
-      required: true,
-    },
-    state: {
-      type: String,
-      required: true,
-    },
-    postalCode: {
-      type: String,
-    },
-    country: {
-      type: String,
-      default: "Ghana",
-    },
-  },
-  identification: {
-    idType: {
-      type: String,
-      enum: ["NATIONAL_ID", "PASSPORT", "DRIVER_LICENSE"],
-      required: true,
-    },
-    idNumber: {
-      type: String,
-      required: true,
-      // ✅ Store encrypted
-    },
-    verified: {
-      type: Boolean,
-      default: false,
-    },
-  },
-  employment: {
-    occupation: {
-      type: String,
-      required: true,
-    },
-    monthlyIncome: {
+    balance: {
       type: Number,
-      required: true,
+      default: 0,
+      min: 0,
+    },
+    currency: {
+      type: String,
+      default: "GHS",
+      enum: ["GHS", "USD", "EUR", "GBP"],
+    },
+    status: {
+      type: String,
+      enum: ["active", "frozen", "closed", "pending"],
+      default: "pending", // ✅ Start as pending until setup complete
+      index: true,
+    },
+    verificationLevel: {
+      type: String,
+      enum: ["basic", "verified", "unverified"],
+      default: "unverified",
+    },
+
+    // ✅ OPTIONAL FIELDS - Not required on account creation
+    personalInfo: {
+      firstName: {
+        type: String,
+        required: false, // ✅ Changed from true to false
+        trim: true,
+      },
+      lastName: {
+        type: String,
+        required: false, // ✅ Changed from true to false
+        trim: true,
+      },
+      dateOfBirth: {
+        type: Date,
+        required: false, // ✅ Changed from true to false
+      },
+    },
+
+    contactInfo: {
+      phoneNumber: {
+        type: String,
+        required: false, // ✅ Changed from true to false
+      },
+      address: {
+        type: String,
+        required: false, // ✅ Changed from true to false
+      },
+      city: {
+        type: String,
+        required: false, // ✅ Changed from true to false
+      },
+      state: {
+        type: String,
+        required: false, // ✅ Changed from true to false
+      },
+      postalCode: {
+        type: String,
+        required: false,
+      },
+      country: {
+        type: String,
+        default: "Ghana",
+      },
+    },
+
+    identification: {
+      idType: {
+        type: String,
+        enum: ["passport", "national_id", "drivers_license", "voter_id", ""], // ✅ lowercase
+        required: false, // ✅ Changed from true to false
+      },
+      idNumber: {
+        type: String,
+        required: false, // ✅ Changed from true to false
+      },
+      verified: {
+        type: Boolean,
+        default: false,
+      },
+    },
+
+    employment: {
+      occupation: {
+        type: String,
+        required: false, // ✅ Changed from true to false
+      },
+      monthlyIncome: {
+        type: Number,
+        required: false, // ✅ Changed from true to false
+        min: 0,
+      },
+    },
+
+    lastActivity: {
+      type: Date,
+      default: Date.now,
+    },
+
+    deletedAt: {
+      type: Date,
+      default: null,
     },
   },
-  verificationLevel: {
-    type: String,
-    enum: ["basic", "verified", "premium"],
-    default: "basic",
-  },
-  lastLoginAt: {
-    type: Date,
-  },
-  createdAt: {
-    type: Date,
-    default: Date.now,
-  },
-  updatedAt: {
-    type: Date,
-    default: Date.now,
-  },
-  deletedAt: {
-    type: Date,
-    default: null, // ✅ Soft delete
-  },
-});
+  {
+    timestamps: true, // Automatically adds createdAt and updatedAt
+  }
+);
 
-// Indexes for fast lookups
+// ✅ Indexes for performance
 accountSchema.index({ userId: 1 });
 accountSchema.index({ accountNumber: 1 });
 accountSchema.index({ status: 1 });
 accountSchema.index({ createdAt: -1 });
 
-// Soft delete query helper
+// ✅ Soft delete query helper
 accountSchema.query.notDeleted = function () {
   return this.where({ deletedAt: null });
 };
 
-// Pre-save hook to update timestamp
-accountSchema.pre("save", function (next) {
-  this.updatedAt = new Date();
-  next();
+// ✅ Virtual to check if profile is complete
+accountSchema.virtual("isProfileComplete").get(function () {
+  return !!(
+    this.personalInfo?.firstName &&
+    this.personalInfo?.lastName &&
+    this.personalInfo?.dateOfBirth &&
+    this.contactInfo?.phoneNumber &&
+    this.contactInfo?.address &&
+    this.identification?.idNumber
+  );
 });
 
-// ✅ UNIQUE INDEX FIX: Handle duplicate account number error
+// ✅ Method to check if account can transact
+accountSchema.methods.canTransact = function () {
+  return this.status === "active" && this.verificationLevel !== "unverified";
+};
+
+// ✅ Handle duplicate account number errors
 accountSchema.post("save", function (error, doc, next) {
   if (error.name === "MongoServerError" && error.code === 11000) {
-    // Duplicate key error
-    if (error.keyPattern.accountNumber) {
+    if (error.keyPattern?.accountNumber) {
       next(
         new Error("Account number already exists. Please generate a new one.")
       );
+    } else if (error.keyPattern?.userId) {
+      next(new Error("User already has an account."));
     } else {
       next(error);
     }
@@ -155,5 +176,9 @@ accountSchema.post("save", function (error, doc, next) {
   }
 });
 
+// ✅ CRITICAL: Prevent model overwrite error
+delete mongoose.connection.models["Account"];
+
 const Account = mongoose.model("Account", accountSchema);
+
 export default Account;

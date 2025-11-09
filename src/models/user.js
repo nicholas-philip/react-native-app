@@ -1,4 +1,4 @@
-// =============== models/user.js ===============
+// =============== models/user.js (FIXED) ===============
 import mongoose from "mongoose";
 import bcrypt from "bcryptjs";
 
@@ -84,5 +84,9 @@ userSchema.methods.toJSON = function () {
   return user;
 };
 
+// ✅ CRITICAL: Prevent model overwrite error
+delete mongoose.connection.models["User"];
+
 const User = mongoose.model("User", userSchema);
+
 export default User;

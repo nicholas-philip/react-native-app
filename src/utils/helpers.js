@@ -1,3 +1,4 @@
+// =============== utils/helpers.js (COMPLETE - SIMPLIFIED ID VALIDATION) ===============
 import crypto from "crypto";
 
 // ✅ ENCRYPTION/DECRYPTION for PII
@@ -242,7 +243,7 @@ export const validateDateOfBirth = (date) => {
   };
 };
 
-// ✅ ID NUMBER VALIDATION
+// ✅ SIMPLIFIED ID NUMBER VALIDATION - No complex format rules
 export const validateIdNumber = (idNumber, idType) => {
   if (!idNumber || typeof idNumber !== "string") {
     return {
@@ -251,51 +252,36 @@ export const validateIdNumber = (idNumber, idType) => {
     };
   }
 
-  // Remove spaces and dashes
-  const cleaned = idNumber.replace(/[\s\-]/g, "");
+  // Remove extra spaces
+  const cleaned = idNumber.trim();
 
-  // Different validation based on ID type
-  switch (idType?.toUpperCase()) {
-    case "NATIONAL_ID":
-      // Accept 9-13 digit National IDs (flexible for different formats)
-      if (!/^\d{9,13}$/.test(cleaned)) {
-        return {
-          valid: false,
-          error: "National ID must be 9-13 digits",
-        };
-      }
-      break;
+  // Basic length check: 5-50 characters
+  if (cleaned.length < 5) {
+    return {
+      valid: false,
+      error: "ID number must be at least 5 characters",
+    };
+  }
 
-    case "PASSPORT":
-      // Passport usually 6-9 alphanumeric
-      if (!/^[A-Z0-9]{6,9}$/.test(cleaned)) {
-        return {
-          valid: false,
-          error: "Invalid passport format (6-9 characters)",
-        };
-      }
-      break;
+  if (cleaned.length > 50) {
+    return {
+      valid: false,
+      error: "ID number cannot exceed 50 characters",
+    };
+  }
 
-    case "DRIVER_LICENSE":
-      // Driver license varies, allow 5-20 alphanumeric
-      if (!/^[A-Z0-9]{5,20}$/.test(cleaned)) {
-        return {
-          valid: false,
-          error: "Invalid driver license format (5-20 characters)",
-        };
-      }
-      break;
-
-    default:
-      return {
-        valid: false,
-        error: "Invalid ID type",
-      };
+  // Accept any alphanumeric characters, spaces, and dashes
+  // Remove this check if you want to allow ANY characters
+  if (!/^[A-Za-z0-9\s\-]+$/.test(cleaned)) {
+    return {
+      valid: false,
+      error: "ID number can only contain letters, numbers, spaces, and dashes",
+    };
   }
 
   return {
     valid: true,
-    idNumber: cleaned,
+    idNumber: cleaned, // Return as-is (keep original format)
   };
 };
 

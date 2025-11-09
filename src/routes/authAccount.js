@@ -77,10 +77,12 @@ router.get("/getUserAccount", authMiddleware, async (req, res) => {
   }
 });
 
+// =============== routes/authAccount.js - SETUP ROUTE (FIXED) ===============
+
 // Complete account setup with full details
 router.post("/setup", authMiddleware, async (req, res) => {
   try {
-    console.log(`[${req.id}] 🔧 Setting up account for user:`, req.user.id);
+    console.log(`[${req.id}] 🔧 Upgrading account for user:`, req.user.id);
 
     const {
       firstName,
@@ -172,93 +174,76 @@ router.post("/setup", authMiddleware, async (req, res) => {
       });
     }
 
-    // ✅ Check if user already has an account
-    const existingAccount = await Account.findOne({ userId: req.user.id });
-    if (existingAccount) {
-      return res.status(400).json({
+    // ✅ Find existing account
+    let account = await Account.findOne({ userId: req.user.id });
+
+    if (!account) {
+      return res.status(404).json({
         success: false,
-        message: "Account already exists for this user",
+        message: "Account not found. Please contact support.",
       });
     }
 
-    // ✅ FIXED: Generate unique account number with proper retry
-    let accountNumber;
-    try {
-      accountNumber = await generateAccountNumber();
-    } catch (err) {
-      return res.status(500).json({
-        success: false,
-        message: err.message,
-      });
-    }
+    // ✅ UPDATE existing account with full details (upgrade)
+    account.personalInfo = {
+      firstName: sanitizeString(firstName, 50),
+      lastName: sanitizeString(lastName, 50),
+      dateOfBirth: dobValidation.dateOfBirth,
+    };
 
-    // ✅ Create new account with encrypted sensitive data
-    const account = new Account({
-      userId: req.user.id,
-      accountNumber,
-      accountType: "savings",
-      balance: 0,
-      currency: "GHS",
-      status: "active",
-      personalInfo: {
-        firstName: sanitizeString(firstName, 50),
-        lastName: sanitizeString(lastName, 50),
-        dateOfBirth: dobValidation.dateOfBirth,
-      },
-      contactInfo: {
-        phoneNumber: encryptSensitiveData(phoneValidation.phoneNumber),
-        address: sanitizeString(address, 200),
-        city: sanitizeString(city, 100),
-        state: sanitizeString(state, 100),
-        postalCode: sanitizeString(postalCode, 20),
-        country: sanitizeString(country, 100) || "Ghana",
-      },
-      identification: {
-        idType,
-        idNumber: encryptSensitiveData(idValidation.idNumber),
-        verified: false,
-      },
-      employment: {
-        occupation: sanitizeString(occupation, 100),
-        monthlyIncome,
-      },
-      verificationLevel: "basic",
-    });
+    account.contactInfo = {
+      phoneNumber: encryptSensitiveData(phoneValidation.phoneNumber),
+      address: sanitizeString(address, 200),
+      city: sanitizeString(city, 100),
+      state: sanitizeString(state, 100),
+      postalCode: sanitizeString(postalCode || "", 20),
+      country: sanitizeString(country, 100) || "Ghana",
+    };
+
+    account.identification = {
+      idType,
+      idNumber: encryptSensitiveData(idValidation.idNumber),
+      verified: false,
+    };
+
+    account.employment = {
+      occupation: sanitizeString(occupation, 100),
+      monthlyIncome,
+    };
+
+    // ✅ CRITICAL: Update verification level and status
+    account.verificationLevel = "basic"; // Basic verification after completing profile
+    account.status = "active"; // ✅ CHANGE FROM PENDING TO ACTIVE
+    account.lastActivity = new Date();
 
     await account.save();
 
-    // Update user profile with account reference
+    // ✅ Update user profile
     await User.findByIdAndUpdate(req.user.id, {
-      accountId: account._id,
       profileCompleted: true,
       fullName: `${firstName} ${lastName}`,
     });
 
-    console.log(`[${req.id}] ✅ Account created successfully:`, accountNumber);
+    console.log(`[${req.id}] ✅ Account upgraded successfully`);
+    console.log(`[${req.id}] 📝 Status: pending → active`);
+    console.log(`[${req.id}] 📝 Verification: unverified → basic`);
 
     res.json({
       success: true,
-      message: "Account created successfully",
-      accountNumber: accountNumber,
+      message: "Account setup completed successfully",
+      accountNumber: account.accountNumber,
+      verificationLevel: account.verificationLevel,
       account: {
         accountNumber: account.accountNumber,
         accountType: account.accountType,
         balance: account.balance,
         currency: account.currency,
-        status: account.status,
-        verificationLevel: account.verificationLevel,
+        status: account.status, // ✅ Will be "active" now
+        verificationLevel: account.verificationLevel, // ✅ Will be "basic" now
       },
     });
   } catch (error) {
     console.error(`[${req.id}] ❌ Account setup error:`, error);
-
-    // Handle duplicate key error
-    if (error.code === 11000) {
-      return res.status(400).json({
-        success: false,
-        message: "Account already exists with this information",
-      });
-    }
 
     res.status(500).json({
       success: false,
