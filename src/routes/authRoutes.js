@@ -1,4 +1,4 @@
-// =============== routes/authRoutes.js (COMPLETE WITH EMAIL INLINE) ===============
+// =============== routes/authRoutes.js (WITH BREVO EMAIL) ===============
 import express from "express";
 import bcrypt from "bcryptjs";
 import User from "../models/user.js";
@@ -10,12 +10,14 @@ import nodemailer from "nodemailer"; // ✅ Import nodemailer
 
 const router = express.Router();
 
-// ✅ Setup email transporter
+// ✅ Setup email transporter (BREVO)
 const transporter = nodemailer.createTransport({
-  service: "gmail",
+  host: "smtp-relay.brevo.com",
+  port: 587,
+  secure: false, // TLS
   auth: {
-    user: process.env.EMAIL_USER,
-    pass: process.env.EMAIL_PASSWORD,
+    user: process.env.SMTP_USER, // 890bb6001@smtp-brevo.com
+    pass: process.env.SMTP_PASS, // mcXtKMj2qvF5f3aW
   },
 });
 
@@ -24,7 +26,7 @@ transporter.verify((error, success) => {
   if (error) {
     console.error("❌ Email transporter error:", error.message);
   } else {
-    console.log("✅ Email transporter ready");
+    console.log("✅ Email transporter (Brevo) ready");
   }
 });
 
@@ -70,7 +72,7 @@ const validateEmail = (email) => {
 const sendVerificationEmail = async (email, code, username) => {
   try {
     const mailOptions = {
-      from: process.env.EMAIL_USER,
+      from: process.env.SENDER_EMAIL, // philipnicholas386@gmail.com
       to: email,
       subject: "Verify Your Tasktuges Account - 6 Digit Code",
       html: `
