@@ -1,4 +1,4 @@
-// =============== models/user.js (FIXED) ===============
+// =============== models/user.js (COMPLETE) ===============
 import mongoose from "mongoose";
 import bcrypt from "bcryptjs";
 
@@ -25,7 +25,7 @@ const userSchema = new mongoose.Schema(
       type: String,
       required: true,
       minlength: 6,
-      select: false, // Don't include in queries by default
+      select: false,
     },
     profileImage: {
       type: String,
@@ -44,10 +44,22 @@ const userSchema = new mongoose.Schema(
       type: Boolean,
       default: false,
     },
-    isEmailVerified: {
+    // ✅ EMAIL VERIFICATION FIELDS
+    emailVerified: {
       type: Boolean,
       default: false,
     },
+    verificationCode: {
+      type: String,
+      default: null,
+      select: false,
+    },
+    verificationCodeExpiresAt: {
+      type: Date,
+      default: null,
+      select: false,
+    },
+    // ✅ END EMAIL VERIFICATION FIELDS
     lastLoginAt: {
       type: Date,
       default: null,
@@ -60,7 +72,6 @@ const userSchema = new mongoose.Schema(
 
 // ✅ Hash password before save
 userSchema.pre("save", async function (next) {
-  // Only hash if password is modified
   if (!this.isModified("password")) return next();
 
   try {
@@ -77,14 +88,13 @@ userSchema.methods.comparePassword = async function (userPassword) {
   return await bcrypt.compare(userPassword, this.password);
 };
 
-// ✅ Hide sensitive data when converting to JSON
+// ✅ Hide sensitive data
 userSchema.methods.toJSON = function () {
   const user = this.toObject();
   delete user.password;
   return user;
 };
 
-// ✅ CRITICAL: Prevent model overwrite error
 delete mongoose.connection.models["User"];
 
 const User = mongoose.model("User", userSchema);

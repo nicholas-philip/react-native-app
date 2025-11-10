@@ -330,7 +330,6 @@ router.post("/paystack/initialize", authMiddleware, async (req, res) => {
         },
       }
     );
-
     console.log(
       `[${req.id}] ✅ Paystack transaction initialized:`,
       paystackResponse.data.data.reference
