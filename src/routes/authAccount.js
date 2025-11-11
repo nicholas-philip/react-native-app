@@ -63,8 +63,8 @@ router.get("/getUserAccount", authMiddleware, async (req, res) => {
       status: account.status,
       verificationLevel: account.verificationLevel,
       personalInfo: {
-        firstName: account.personalInfo.firstName,
-        lastName: account.personalInfo.lastName,
+        firstName: account.personalInfo?.firstName,
+        lastName: account.personalInfo?.lastName,
       },
       createdAt: account.createdAt,
     });
@@ -76,8 +76,6 @@ router.get("/getUserAccount", authMiddleware, async (req, res) => {
     });
   }
 });
-
-// =============== routes/authAccount.js - SETUP ROUTE (FIXED) ===============
 
 // Complete account setup with full details
 router.post("/setup", authMiddleware, async (req, res) => {
@@ -200,7 +198,7 @@ router.post("/setup", authMiddleware, async (req, res) => {
       country: sanitizeString(country, 100) || "Ghana",
     };
 
-    // ✅ ADD: Store normalized phone number for searching (unencrypted)
+    // ✅ Store normalized phone number for searching (unencrypted)
     account.searchablePhone = phoneValidation.phoneNumber.replace(/\D/g, "");
 
     account.identification = {
@@ -241,8 +239,8 @@ router.post("/setup", authMiddleware, async (req, res) => {
         accountType: account.accountType,
         balance: account.balance,
         currency: account.currency,
-        status: account.status, // ✅ Will be "active" now
-        verificationLevel: account.verificationLevel, // ✅ Will be "basic" now
+        status: account.status,
+        verificationLevel: account.verificationLevel,
       },
     });
   } catch (error) {
@@ -255,20 +253,55 @@ router.post("/setup", authMiddleware, async (req, res) => {
   }
 });
 
-// Get full account details
+// ✅ Get full account details (FIXED - Safe decryption)
 router.get("/details", authMiddleware, async (req, res) => {
   try {
+    console.log(
+      `[${req.id}] 🔍 Getting account details for user:`,
+      req.user.id
+    );
+
     const account = await Account.findOne({ userId: req.user.id });
 
     if (!account) {
+      console.log(`[${req.id}] ❌ No account found for user:`, req.user.id);
       return res.status(404).json({
         success: false,
         message: "Account not found",
       });
     }
 
-    // ✅ Decrypt sensitive data for display
-    res.json({
+    console.log(`[${req.id}] ✅ Account found:`, account.accountNumber);
+
+    // ✅ SAFE decryption - handle null/undefined values
+    let phoneNumber = "Not provided";
+    let idNumber = "Not provided";
+
+    try {
+      if (account.contactInfo?.phoneNumber) {
+        phoneNumber = decryptSensitiveData(account.contactInfo.phoneNumber);
+        console.log(`[${req.id}] ✅ Phone decrypted successfully`);
+      }
+    } catch (decryptErr) {
+      console.warn(
+        `[${req.id}] ⚠ Could not decrypt phone:`,
+        decryptErr.message
+      );
+      phoneNumber = account.contactInfo?.phoneNumber || "Not provided";
+    }
+
+    try {
+      if (account.identification?.idNumber) {
+        idNumber = decryptSensitiveData(account.identification.idNumber);
+        console.log(`[${req.id}] ✅ ID decrypted successfully`);
+      }
+    } catch (decryptErr) {
+      console.warn(`[${req.id}] ⚠ Could not decrypt ID:`, decryptErr.message);
+      idNumber = account.identification?.idNumber || "Not provided";
+    }
+
+    // ✅ Return safe data
+    const responseData = {
       success: true,
       account: {
         accountNumber: account.accountNumber,
@@ -278,32 +311,40 @@ router.get("/details", authMiddleware, async (req, res) => {
         status: account.status,
         verificationLevel: account.verificationLevel,
         personalInfo: {
-          firstName: account.personalInfo.firstName,
-          lastName: account.personalInfo.lastName,
-          dateOfBirth: account.personalInfo.dateOfBirth,
+          firstName: account.personalInfo?.firstName || "Not provided",
+          lastName: account.personalInfo?.lastName || "Not provided",
+          dateOfBirth: account.personalInfo?.dateOfBirth || null,
         },
         contactInfo: {
-          phoneNumber: decryptSensitiveData(account.contactInfo.phoneNumber),
-          address: account.contactInfo.address,
-          city: account.contactInfo.city,
-          state: account.contactInfo.state,
-          postalCode: account.contactInfo.postalCode,
-          country: account.contactInfo.country,
+          phoneNumber,
+          address: account.contactInfo?.address || "Not provided",
+          city: account.contactInfo?.city || "Not provided",
+          state: account.contactInfo?.state || "Not provided",
+          postalCode: account.contactInfo?.postalCode || "Not provided",
+          country: account.contactInfo?.country || "Ghana",
         },
         identification: {
-          idType: account.identification?.idType,
-          idNumber: decryptSensitiveData(account.identification?.idNumber),
-          verified: account.identification?.verified,
+          idType: account.identification?.idType || "Not provided",
+          idNumber,
+          verified: account.identification?.verified || false,
         },
-        employment: account.employment,
+        employment: {
+          occupation: account.employment?.occupation || "Not provided",
+          monthlyIncome: account.employment?.monthlyIncome || 0,
+        },
         createdAt: account.createdAt,
       },
-    });
+    };
+
+    console.log(`[${req.id}] ✅ Account details response ready`);
+    res.json(responseData);
   } catch (error) {
-    console.error(`[${req.id}] ❌ Get account error:`, error);
+    console.error(`[${req.id}] ❌ Get account details error:`, error);
+    console.error(`[${req.id}] Error stack:`, error.stack);
     res.status(500).json({
       success: false,
-      message: "Server error",
+      message: "Server error: " + error.message,
+      requestId: req.id,
     });
   }
 });
@@ -342,7 +383,7 @@ router.put("/update", authMiddleware, async (req, res) => {
       account.contactInfo.phoneNumber = encryptSensitiveData(
         phoneValidation.phoneNumber
       );
-      // ✅ ADD: Update searchable phone field
+      // ✅ Update searchable phone field
       account.searchablePhone = phoneValidation.phoneNumber.replace(/\D/g, "");
     }
 
@@ -510,7 +551,7 @@ router.get("/number/:accountNumber", authMiddleware, async (req, res) => {
   }
 });
 
-// ✅ LOOKUP ACCOUNT BY PHONE NUMBER (FIXED - uses searchablePhone)
+// ✅ LOOKUP ACCOUNT BY PHONE NUMBER (uses searchablePhone)
 router.get("/lookup", authMiddleware, async (req, res) => {
   try {
     const { phone } = req.query;
@@ -555,11 +596,23 @@ router.get("/lookup", authMiddleware, async (req, res) => {
 
     console.log(`[${req.id}] ✅ Account found:`, account.accountNumber);
 
+    // ✅ Safe decryption for response
+    let phoneDisplay = "N/A";
+    try {
+      if (account.contactInfo?.phoneNumber) {
+        phoneDisplay = decryptSensitiveData(account.contactInfo.phoneNumber);
+      }
+    } catch (e) {
+      phoneDisplay = account.contactInfo?.phoneNumber || "N/A";
+    }
+
     res.json({
       success: true,
       accountNumber: account.accountNumber,
-      phoneNumber: decryptSensitiveData(account.contactInfo.phoneNumber),
-      accountHolder: `${account.personalInfo.firstName} ${account.personalInfo.lastName}`,
+      phoneNumber: phoneDisplay,
+      accountHolder: `${account.personalInfo?.firstName || "User"} ${
+        account.personalInfo?.lastName || ""
+      }`.trim(),
     });
   } catch (err) {
     console.error(`[${req.id}] ❌ Lookup error:`, err);
@@ -570,7 +623,7 @@ router.get("/lookup", authMiddleware, async (req, res) => {
   }
 });
 
-// ✅ GET ACCOUNT BY ID (existing endpoint)
+// ✅ GET ACCOUNT BY ID
 router.get("/:id", authMiddleware, async (req, res) => {
   try {
     const account = await Account.findById(req.params.id);

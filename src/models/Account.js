@@ -34,7 +34,7 @@ const accountSchema = new mongoose.Schema(
     status: {
       type: String,
       enum: ["active", "frozen", "closed", "pending"],
-      default: "pending", // ✅ Start as pending until setup complete
+      default: "pending",
       index: true,
     },
     verificationLevel: {
@@ -43,40 +43,41 @@ const accountSchema = new mongoose.Schema(
       default: "unverified",
     },
 
-    // ✅ OPTIONAL FIELDS - Not required on account creation
+    // Personal Information
     personalInfo: {
       firstName: {
         type: String,
-        required: false, // ✅ Changed from true to false
+        required: false,
         trim: true,
       },
       lastName: {
         type: String,
-        required: false, // ✅ Changed from true to false
+        required: false,
         trim: true,
       },
       dateOfBirth: {
         type: Date,
-        required: false, // ✅ Changed from true to false
+        required: false,
       },
     },
 
+    // Contact Information
     contactInfo: {
       phoneNumber: {
         type: String,
-        required: false, // ✅ Changed from true to false (encrypted)
+        required: false, // Encrypted
       },
       address: {
         type: String,
-        required: false, // ✅ Changed from true to false
+        required: false,
       },
       city: {
         type: String,
-        required: false, // ✅ Changed from true to false
+        required: false,
       },
       state: {
         type: String,
-        required: false, // ✅ Changed from true to false
+        required: false,
       },
       postalCode: {
         type: String,
@@ -88,23 +89,24 @@ const accountSchema = new mongoose.Schema(
       },
     },
 
-    // ✅ NEW: Searchable phone number (unencrypted, for lookups)
+    // ✅ SEARCHABLE PHONE - Unencrypted for lookups
     searchablePhone: {
       type: String,
       index: true,
       default: null,
-      sparse: true, // Allow multiple null values
+      sparse: true,
     },
 
+    // Identification
     identification: {
       idType: {
         type: String,
-        enum: ["passport", "national_id", "drivers_license", "voter_id", ""], // ✅ lowercase
-        required: false, // ✅ Changed from true to false
+        enum: ["passport", "national_id", "drivers_license", "voter_id", ""],
+        required: false,
       },
       idNumber: {
         type: String,
-        required: false, // ✅ Changed from true to false (encrypted)
+        required: false, // Encrypted
       },
       verified: {
         type: Boolean,
@@ -112,14 +114,15 @@ const accountSchema = new mongoose.Schema(
       },
     },
 
+    // Employment
     employment: {
       occupation: {
         type: String,
-        required: false, // ✅ Changed from true to false
+        required: false,
       },
       monthlyIncome: {
         type: Number,
-        required: false, // ✅ Changed from true to false
+        required: false,
         min: 0,
       },
     },
@@ -135,7 +138,7 @@ const accountSchema = new mongoose.Schema(
     },
   },
   {
-    timestamps: true, // Automatically adds createdAt and updatedAt
+    timestamps: true,
   }
 );
 
@@ -144,7 +147,7 @@ accountSchema.index({ userId: 1 });
 accountSchema.index({ accountNumber: 1 });
 accountSchema.index({ status: 1 });
 accountSchema.index({ createdAt: -1 });
-accountSchema.index({ searchablePhone: 1, status: 1 }); // ✅ Compound index for lookups
+accountSchema.index({ searchablePhone: 1, status: 1 }); // ✅ Compound index
 
 // ✅ Soft delete query helper
 accountSchema.query.notDeleted = function () {
@@ -185,7 +188,7 @@ accountSchema.post("save", function (error, doc, next) {
   }
 });
 
-// ✅ CRITICAL: Prevent model overwrite error
+// ✅ Prevent model overwrite error
 delete mongoose.connection.models["Account"];
 
 const Account = mongoose.model("Account", accountSchema);
