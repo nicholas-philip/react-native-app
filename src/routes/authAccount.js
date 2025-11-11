@@ -504,5 +504,81 @@ router.get("/number/:accountNumber", authMiddleware, async (req, res) => {
     });
   }
 });
+// ✅ LOOKUP ACCOUNT BY PHONE NUMBER
+router.get("/lookup", authMiddleware, async (req, res) => {
+  try {
+    const { phone } = req.query;
+
+    if (!phone) {
+      return res.status(400).json({
+        success: false,
+        message: "Phone number is required",
+      });
+    }
+
+    // Normalize phone number (remove +, spaces, etc.)
+    const normalizedPhone = phone.replace(/\D/g, "");
+
+    // Search for account
+    const account = await Account.findOne({
+      $or: [
+        { phoneNumber: phone },
+        { phoneNumber: normalizedPhone },
+        { phone: phone },
+        { phone: normalizedPhone },
+      ],
+    });
+
+    if (!account) {
+      return res.status(404).json({
+        success: false,
+        message: "Account not found",
+      });
+    }
+
+    if (account.status !== "active") {
+      return res.status(400).json({
+        success: false,
+        message: "Account is not active",
+      });
+    }
+
+    res.json({
+      success: true,
+      accountNumber: account.accountNumber,
+      phoneNumber: account.phoneNumber,
+      accountHolder: account.accountHolder || "N/A",
+    });
+  } catch (err) {
+    res.status(500).json({
+      success: false,
+      message: err.message,
+    });
+  }
+});
+
+// ✅ GET ACCOUNT BY ID (existing endpoint)
+router.get("/:id", authMiddleware, async (req, res) => {
+  try {
+    const account = await Account.findById(req.params.id);
+
+    if (!account) {
+      return res.status(404).json({
+        success: false,
+        message: "Account not found",
+      });
+    }
+
+    res.json({
+      success: true,
+      account,
+    });
+  } catch (err) {
+    res.status(500).json({
+      success: false,
+      message: err.message,
+    });
+  }
+});
 
 export default router;

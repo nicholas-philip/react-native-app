@@ -4,7 +4,6 @@ import { connectDB } from "./lib/db.js";
 import authRoutes from "./routes/authRoutes.js";
 import authPayments from "./routes/authPayment.js";
 import authAccount from "./routes/authAccount.js";
-import accountsRoutes from "./routes/accounts.js"; // ✅ ADD THIS
 import authTransactions from "./routes/authTransactions.js";
 import authWallet from "./routes/authWallet.js";
 import job from "./lib/cron.js";
@@ -109,7 +108,6 @@ app.get("/", (req, res) => {
 app.use("/api/auth", authLimiter, authRoutes);
 app.use("/api/payments", paymentLimiter, authPayments);
 app.use("/api/accounts", authAccount);
-app.use("/api/accounts", accountsRoutes); // ✅ ADD THIS - accounts lookup routes
 app.use("/api/transactions", authTransactions);
 app.use("/api/wallet", authWallet);
 
@@ -133,7 +131,7 @@ app.use((req, res) => {
         "PUT /api/accounts/update",
         "PATCH /api/accounts/userAccountStatus",
         "GET /api/accounts/number/:accountNumber",
-        "GET /api/accounts/lookup", // ✅ ADD THIS
+        "GET /api/accounts/lookup",
       ],
       transactions: [
         "GET /api/transactions/history",
