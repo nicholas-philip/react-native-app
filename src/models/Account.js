@@ -64,7 +64,7 @@ const accountSchema = new mongoose.Schema(
     contactInfo: {
       phoneNumber: {
         type: String,
-        required: false, // ✅ Changed from true to false
+        required: false, // ✅ Changed from true to false (encrypted)
       },
       address: {
         type: String,
@@ -88,6 +88,14 @@ const accountSchema = new mongoose.Schema(
       },
     },
 
+    // ✅ NEW: Searchable phone number (unencrypted, for lookups)
+    searchablePhone: {
+      type: String,
+      index: true,
+      default: null,
+      sparse: true, // Allow multiple null values
+    },
+
     identification: {
       idType: {
         type: String,
@@ -96,7 +104,7 @@ const accountSchema = new mongoose.Schema(
       },
       idNumber: {
         type: String,
-        required: false, // ✅ Changed from true to false
+        required: false, // ✅ Changed from true to false (encrypted)
       },
       verified: {
         type: Boolean,
@@ -136,6 +144,7 @@ accountSchema.index({ userId: 1 });
 accountSchema.index({ accountNumber: 1 });
 accountSchema.index({ status: 1 });
 accountSchema.index({ createdAt: -1 });
+accountSchema.index({ searchablePhone: 1, status: 1 }); // ✅ Compound index for lookups
 
 // ✅ Soft delete query helper
 accountSchema.query.notDeleted = function () {

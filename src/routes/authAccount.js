@@ -200,6 +200,9 @@ router.post("/setup", authMiddleware, async (req, res) => {
       country: sanitizeString(country, 100) || "Ghana",
     };
 
+    // ✅ ADD: Store normalized phone number for searching (unencrypted)
+    account.searchablePhone = phoneValidation.phoneNumber.replace(/\D/g, "");
+
     account.identification = {
       idType,
       idNumber: encryptSensitiveData(idValidation.idNumber),
@@ -339,6 +342,8 @@ router.put("/update", authMiddleware, async (req, res) => {
       account.contactInfo.phoneNumber = encryptSensitiveData(
         phoneValidation.phoneNumber
       );
+      // ✅ ADD: Update searchable phone field
+      account.searchablePhone = phoneValidation.phoneNumber.replace(/\D/g, "");
     }
 
     if (address) {
@@ -504,7 +509,8 @@ router.get("/number/:accountNumber", authMiddleware, async (req, res) => {
     });
   }
 });
-// ✅ LOOKUP ACCOUNT BY PHONE NUMBER
+
+// ✅ LOOKUP ACCOUNT BY PHONE NUMBER (FIXED - uses searchablePhone)
 router.get("/lookup", authMiddleware, async (req, res) => {
   try {
     const { phone } = req.query;
@@ -519,17 +525,21 @@ router.get("/lookup", authMiddleware, async (req, res) => {
     // Normalize phone number (remove +, spaces, etc.)
     const normalizedPhone = phone.replace(/\D/g, "");
 
-    // Search for account
+    console.log(
+      `[${req.id}] 🔍 Looking up account for phone:`,
+      normalizedPhone
+    );
+
+    // ✅ SEARCH using searchablePhone field (unencrypted, searchable)
     const account = await Account.findOne({
-      $or: [
-        { phoneNumber: phone },
-        { phoneNumber: normalizedPhone },
-        { phone: phone },
-        { phone: normalizedPhone },
-      ],
+      searchablePhone: normalizedPhone,
     });
 
     if (!account) {
+      console.log(
+        `[${req.id}] ❌ No account found for phone:`,
+        normalizedPhone
+      );
       return res.status(404).json({
         success: false,
         message: "Account not found",
@@ -543,13 +553,16 @@ router.get("/lookup", authMiddleware, async (req, res) => {
       });
     }
 
+    console.log(`[${req.id}] ✅ Account found:`, account.accountNumber);
+
     res.json({
       success: true,
       accountNumber: account.accountNumber,
-      phoneNumber: account.phoneNumber,
-      accountHolder: account.accountHolder || "N/A",
+      phoneNumber: decryptSensitiveData(account.contactInfo.phoneNumber),
+      accountHolder: `${account.personalInfo.firstName} ${account.personalInfo.lastName}`,
     });
   } catch (err) {
+    console.error(`[${req.id}] ❌ Lookup error:`, err);
     res.status(500).json({
       success: false,
       message: err.message,
