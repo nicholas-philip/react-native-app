@@ -1,130 +1,346 @@
+// =============== routes/authPayment.js - COMPLETE FIXED VERSION ===============
 import express from "express";
+import axios from "axios";
+import Payment from "../models/Payment.js";
+import Transaction from "../models/Transaction.js";
 import authMiddleware from "../middleware/auth.js";
+import mongoose from "mongoose";
 import Account from "../models/Account.js";
-import User from "../models/user.js";
 import {
+  generateReference,
+  validateAmount,
   validatePhoneNumber,
-  validateDateOfBirth,
-  validateIdNumber,
-  validateEmail,
-  sanitizeString,
   encryptSensitiveData,
   decryptSensitiveData,
 } from "../utils/helpers.js";
+import crypto from "crypto";
 
 const router = express.Router();
 
-// ✅ FIXED: Generate unique 10-digit account number with retry logic
-const generateAccountNumber = async () => {
-  const MAX_RETRIES = 10;
+// ✅ VERIFY Paystack webhook signature
+const verifyPaystackSignature = (req) => {
+  const hash = crypto
+    .createHmac("sha512", process.env.PAYSTACK_SECRET_KEY)
+    .update(JSON.stringify(req.body))
+    .digest("hex");
 
-  for (let i = 0; i < MAX_RETRIES; i++) {
-    const prefix = "10"; // Bank prefix
-    const randomDigits = Math.floor(Math.random() * 100000000)
-      .toString()
-      .padStart(8, "0");
-    const accountNumber = prefix + randomDigits;
-
-    // Check if unique
-    const existing = await Account.findOne({ accountNumber });
-    if (!existing) {
-      return accountNumber;
-    }
-  }
-
-  throw new Error(
-    "Failed to generate unique account number. Please try again."
-  );
+  return hash === req.headers["x-paystack-signature"];
 };
 
-// Get user account
-router.get("/getUserAccount", authMiddleware, async (req, res) => {
+// ✅ UNIFIED: Initiate Payment (Wallet, Card, Transfer only - Deposits handled separately)
+router.post("/initiate", authMiddleware, async (req, res) => {
+  const session = await mongoose.startSession();
+  session.startTransaction();
+
   try {
-    console.log(`[${req.id}] 🔍 Getting account for user:`, req.user.id);
+    const {
+      amount,
+      paymentMethod, // "wallet", "card", "transfer"
+      phoneNumber,
+      network, // "MTN", "VODAFONE", "TIGO"
+      recipient, // For transfers to other users
+      description,
+      idempotencyKey, // For idempotency
+    } = req.body;
 
-    const account = await Account.findOne({ userId: req.user.id });
+    console.log(`[${req.id}] 💳 Payment initiate request:`, {
+      amount,
+      paymentMethod,
+      recipient: recipient?.name,
+    });
 
+    // ✅ INPUT VALIDATION
+    if (!amount) {
+      throw new Error("Amount is required");
+    }
+
+    const validatedAmount = validateAmount(amount);
+    if (!validatedAmount.valid) {
+      throw new Error(validatedAmount.error);
+    }
+
+    if (!paymentMethod) {
+      throw new Error("Payment method is required");
+    }
+
+    if (!["wallet", "card", "transfer"].includes(paymentMethod)) {
+      throw new Error("Invalid payment method");
+    }
+
+    // ✅ IDEMPOTENCY CHECK
+    if (idempotencyKey) {
+      const existingPayment = await Payment.findOne({ idempotencyKey }).session(
+        session
+      );
+      if (existingPayment) {
+        console.log(
+          `[${req.id}] ℹ️ Idempotent request - returning existing payment`
+        );
+        await session.commitTransaction();
+        return res.status(201).json({
+          success: true,
+          message: "Idempotent request - returning existing payment",
+          payment: existingPayment,
+        });
+      }
+    }
+
+    const account = await Account.findOne({ userId: req.user.id }).session(
+      session
+    );
     if (!account) {
-      console.log(`[${req.id}] ❌ No account found for user:`, req.user.id);
-      return res.status(404).json({
-        success: false,
-        message: "Account not found. Please complete account setup.",
+      throw new Error("Account not found");
+    }
+
+    console.log(`[${req.id}] 📊 Account status:`, account.status);
+
+    if (account.status !== "active") {
+      throw new Error(`Account is ${account.status}. Cannot process payments.`);
+    }
+
+    // Check balance for payments
+    if (account.balance < validatedAmount.amount) {
+      throw new Error(
+        `Insufficient funds. Balance: ₵${account.balance}, Required: ₵${validatedAmount.amount}`
+      );
+    }
+
+    const paymentReference = generateReference("payment");
+    console.log(`[${req.id}] 📝 Generated reference:`, paymentReference);
+
+    // ✅ WALLET OR CARD PAYMENT (Pay bills)
+    if (paymentMethod === "wallet" || paymentMethod === "card") {
+      console.log(`[${req.id}] 💰 Processing ${paymentMethod} payment`);
+
+      if (!recipient || !recipient.name) {
+        throw new Error("Recipient name is required");
+      }
+
+      // Validate description
+      if (description && description.length > 500) {
+        throw new Error("Description too long (max 500 characters)");
+      }
+
+      // ✅ Debit sender
+      const balanceBefore = account.balance;
+      account.balance -= validatedAmount.amount;
+      const balanceAfter = account.balance;
+
+      console.log(
+        `[${req.id}] 💸 Balance change: ${balanceBefore} → ${balanceAfter}`
+      );
+
+      const payment = new Payment({
+        accountId: account._id,
+        paymentMethod: paymentMethod,
+        amount: validatedAmount.amount,
+        currency: account.currency,
+        status: "completed",
+        recipient: {
+          name: recipient.name,
+        },
+        paymentReference,
+        idempotencyKey: idempotencyKey || null,
+        processedAt: new Date(),
+      });
+
+      const transaction = new Transaction({
+        accountId: account._id,
+        type: "payment",
+        amount: validatedAmount.amount,
+        currency: account.currency,
+        status: "completed",
+        description: description || `Payment to ${recipient.name}`,
+        balanceBefore,
+        balanceAfter,
+        reference: paymentReference,
+        metadata: {
+          method: paymentMethod,
+          ipAddress: req.ip,
+          userAgent: req.get("user-agent"),
+        },
+        completedAt: new Date(),
+      });
+
+      payment.transactionId = transaction._id;
+
+      await account.save({ session });
+      await transaction.save({ session });
+      await payment.save({ session });
+
+      await session.commitTransaction();
+
+      console.log(`[${req.id}] ✅ Payment completed successfully`);
+
+      return res.status(201).json({
+        success: true,
+        message: "Payment completed successfully",
+        payment,
+        newBalance: account.balance,
       });
     }
 
-    console.log(`[${req.id}] ✅ Account found:`, account.accountNumber);
+    // ✅ TRANSFER TO ANOTHER USER
+    if (paymentMethod === "transfer") {
+      console.log(`[${req.id}] 🔄 Processing transfer`);
 
-    res.json({
-      success: true,
-      accountNumber: account.accountNumber,
-      accountType: account.accountType,
-      balance: account.balance,
-      currency: account.currency,
-      status: account.status,
-      verificationLevel: account.verificationLevel,
-      personalInfo: {
-        firstName: account.personalInfo?.firstName,
-        lastName: account.personalInfo?.lastName,
-      },
-      createdAt: account.createdAt,
-    });
+      if (!recipient || !recipient.accountNumber) {
+        throw new Error("Recipient account number is required");
+      }
+
+      const recipientAccount = await Account.findOne({
+        accountNumber: recipient.accountNumber,
+      }).session(session);
+
+      if (!recipientAccount) {
+        throw new Error("Recipient account not found");
+      }
+
+      console.log(
+        `[${req.id}] 📋 Recipient account:`,
+        recipientAccount.accountNumber
+      );
+
+      if (recipientAccount.status !== "active") {
+        throw new Error("Recipient account is not active");
+      }
+
+      if (account.accountNumber === recipient.accountNumber) {
+        throw new Error("Cannot transfer to same account");
+      }
+
+      // ✅ Debit sender
+      const senderBalanceBefore = account.balance;
+      account.balance -= validatedAmount.amount;
+      const senderBalanceAfter = account.balance;
+
+      console.log(
+        `[${req.id}] 💸 Sender balance: ${senderBalanceBefore} → ${senderBalanceAfter}`
+      );
+
+      const senderPayment = new Payment({
+        accountId: account._id,
+        paymentMethod: "transfer",
+        amount: validatedAmount.amount,
+        currency: account.currency,
+        status: "completed",
+        recipient: {
+          name: recipient.name || "Transfer",
+          accountNumber: recipient.accountNumber,
+        },
+        paymentReference,
+        idempotencyKey: idempotencyKey || null,
+      });
+
+      const senderTransaction = new Transaction({
+        accountId: account._id,
+        type: "transfer_out",
+        amount: validatedAmount.amount,
+        currency: account.currency,
+        status: "completed",
+        description: description || `Transfer to ${recipient.accountNumber}`,
+        balanceBefore: senderBalanceBefore,
+        balanceAfter: senderBalanceAfter,
+        reference: paymentReference,
+        metadata: {
+          recipientAccountNumber: recipient.accountNumber,
+          ipAddress: req.ip,
+          userAgent: req.get("user-agent"),
+        },
+        completedAt: new Date(),
+      });
+
+      senderPayment.transactionId = senderTransaction._id;
+
+      // ✅ Credit recipient
+      const recipientBalanceBefore = recipientAccount.balance;
+      recipientAccount.balance += validatedAmount.amount;
+      const recipientBalanceAfter = recipientAccount.balance;
+
+      console.log(
+        `[${req.id}] 💳 Recipient balance: ${recipientBalanceBefore} → ${recipientBalanceAfter}`
+      );
+
+      const recipientTransaction = new Transaction({
+        accountId: recipientAccount._id,
+        type: "transfer_in",
+        amount: validatedAmount.amount,
+        currency: recipientAccount.currency,
+        status: "completed",
+        description: description || `Transfer from ${account.accountNumber}`,
+        balanceBefore: recipientBalanceBefore,
+        balanceAfter: recipientBalanceAfter,
+        reference: paymentReference,
+        metadata: {
+          senderAccountNumber: account.accountNumber,
+          ipAddress: req.ip,
+          userAgent: req.get("user-agent"),
+        },
+        completedAt: new Date(),
+      });
+
+      await account.save({ session });
+      await recipientAccount.save({ session });
+      await senderTransaction.save({ session });
+      await recipientTransaction.save({ session });
+      await senderPayment.save({ session });
+
+      await session.commitTransaction();
+
+      console.log(`[${req.id}] ✅ Transfer completed successfully`);
+
+      return res.status(201).json({
+        success: true,
+        message: "Transfer completed successfully",
+        payment: senderPayment,
+        newBalance: account.balance,
+        recipient: {
+          accountNumber: recipientAccount.accountNumber,
+          received: validatedAmount.amount,
+        },
+      });
+    }
+
+    throw new Error("Invalid payment method");
   } catch (err) {
-    console.error(`[${req.id}] ❌ getUserAccount error:`, err);
-    res.status(500).json({
+    await session.abortTransaction();
+    console.error(`[${req.id}] ❌ Payment error:`, err.message);
+    res.status(400).json({
       success: false,
       message: err.message,
     });
+  } finally {
+    session.endSession();
   }
 });
 
-// Complete account setup with full details
-router.post("/setup", authMiddleware, async (req, res) => {
+// ✅ PAYSTACK: Initialize Mobile Money Payment
+router.post("/paystack/initialize", authMiddleware, async (req, res) => {
   try {
-    console.log(`[${req.id}] 🔧 Upgrading account for user:`, req.user.id);
+    const { amount, email, phoneNumber, network } = req.body;
 
-    const {
-      firstName,
-      lastName,
-      dateOfBirth,
-      phoneNumber,
-      address,
-      city,
-      state,
-      postalCode,
-      country,
-      idType,
-      idNumber,
-      occupation,
-      monthlyIncome,
-    } = req.body;
+    console.log(`[${req.id}] 📱 Paystack initialization request:`, {
+      amount,
+      network,
+      phoneNumber: phoneNumber?.substring(0, 6) + "****",
+    });
 
     // ✅ INPUT VALIDATION
-    if (!firstName || !lastName || !dateOfBirth) {
+    const validatedAmount = validateAmount(amount);
+    if (!validatedAmount.valid) {
       return res.status(400).json({
         success: false,
-        message: "Please provide all personal information",
+        message: validatedAmount.error,
       });
     }
 
-    // Validate name (alphanumeric + spaces, max 50 chars)
-    const nameRegex = /^[a-zA-Z\s'-]{2,50}$/;
-    if (!nameRegex.test(firstName) || !nameRegex.test(lastName)) {
+    if (!["MTN", "VODAFONE", "TIGO"].includes(network)) {
       return res.status(400).json({
         success: false,
-        message: "Invalid first or last name",
+        message: "Invalid network. Must be MTN, VODAFONE, or TIGO",
       });
     }
 
-    // Validate date of birth
-    const dobValidation = validateDateOfBirth(dateOfBirth);
-    if (!dobValidation.valid) {
-      return res.status(400).json({
-        success: false,
-        message: dobValidation.error,
-      });
-    }
-
-    // Validate phone number
     const phoneValidation = validatePhoneNumber(phoneNumber);
     if (!phoneValidation.valid) {
       return res.status(400).json({
@@ -133,397 +349,223 @@ router.post("/setup", authMiddleware, async (req, res) => {
       });
     }
 
-    // Validate address
-    if (!address || address.length < 5 || address.length > 200) {
-      return res.status(400).json({
-        success: false,
-        message: "Address must be between 5 and 200 characters",
-      });
-    }
-
-    if (!city || !state || !country) {
-      return res.status(400).json({
-        success: false,
-        message: "Please provide all contact information",
-      });
-    }
-
-    // Validate ID
-    const idValidation = validateIdNumber(idNumber, idType);
-    if (!idValidation.valid) {
-      return res.status(400).json({
-        success: false,
-        message: idValidation.error,
-      });
-    }
-
-    // Validate occupation and income
-    if (!occupation || occupation.length < 2 || occupation.length > 100) {
-      return res.status(400).json({
-        success: false,
-        message: "Please provide valid employment information",
-      });
-    }
-
-    if (!monthlyIncome || monthlyIncome < 0 || monthlyIncome > 10000000) {
-      return res.status(400).json({
-        success: false,
-        message: "Please provide valid monthly income",
-      });
-    }
-
-    // ✅ Find existing account
-    let account = await Account.findOne({ userId: req.user.id });
-
+    const account = await Account.findOne({ userId: req.user.id });
     if (!account) {
       return res.status(404).json({
         success: false,
-        message: "Account not found. Please contact support.",
+        message: "Account not found",
       });
     }
 
-    // ✅ UPDATE existing account with full details (upgrade)
-    account.personalInfo = {
-      firstName: sanitizeString(firstName, 50),
-      lastName: sanitizeString(lastName, 50),
-      dateOfBirth: dobValidation.dateOfBirth,
-    };
+    console.log(`[${req.id}] 📊 Account found:`, account.accountNumber);
 
-    account.contactInfo = {
-      phoneNumber: encryptSensitiveData(phoneValidation.phoneNumber),
-      address: sanitizeString(address, 200),
-      city: sanitizeString(city, 100),
-      state: sanitizeString(state, 100),
-      postalCode: sanitizeString(postalCode || "", 20),
-      country: sanitizeString(country, 100) || "Ghana",
-    };
-
-    // ✅ Store normalized phone number for searching (unencrypted)
-    account.searchablePhone = phoneValidation.phoneNumber.replace(/\D/g, "");
-
-    account.identification = {
-      idType,
-      idNumber: encryptSensitiveData(idValidation.idNumber),
-      verified: false,
-    };
-
-    account.employment = {
-      occupation: sanitizeString(occupation, 100),
-      monthlyIncome,
-    };
-
-    // ✅ CRITICAL: Update verification level and status
-    account.verificationLevel = "basic"; // Basic verification after completing profile
-    account.status = "active"; // ✅ CHANGE FROM PENDING TO ACTIVE
-    account.lastActivity = new Date();
-
-    await account.save();
-
-    // ✅ Update user profile
-    await User.findByIdAndUpdate(req.user.id, {
-      profileCompleted: true,
-      fullName: `${firstName} ${lastName}`,
-    });
-
-    console.log(`[${req.id}] ✅ Account upgraded successfully`);
-    console.log(`[${req.id}] 📝 Status: pending → active`);
-    console.log(`[${req.id}] 📝 Verification: unverified → basic`);
-
-    res.json({
-      success: true,
-      message: "Account setup completed successfully",
-      accountNumber: account.accountNumber,
-      verificationLevel: account.verificationLevel,
-      account: {
-        accountNumber: account.accountNumber,
-        accountType: account.accountType,
-        balance: account.balance,
-        currency: account.currency,
-        status: account.status,
-        verificationLevel: account.verificationLevel,
+    // Call Paystack to initialize transaction
+    const paystackResponse = await axios.post(
+      "https://api.paystack.co/transaction/initialize",
+      {
+        email: email || req.user.email,
+        amount: validatedAmount.amount * 100, // Paystack uses cents
+        metadata: {
+          userId: req.user.id,
+          accountNumber: account.accountNumber,
+          network,
+          phoneNumber: encryptSensitiveData(phoneNumber),
+        },
       },
-    });
-  } catch (error) {
-    console.error(`[${req.id}] ❌ Account setup error:`, error);
-
-    res.status(500).json({
-      success: false,
-      message: "Server error. Please try again later.",
-    });
-  }
-});
-
-// ✅ Get full account details (FIXED - Safe decryption)
-router.get("/details", authMiddleware, async (req, res) => {
-  try {
-    console.log(
-      `[${req.id}] 🔍 Getting account details for user:`,
-      req.user.id
+      {
+        headers: {
+          Authorization: `Bearer ${process.env.PAYSTACK_SECRET_KEY}`,
+        },
+      }
     );
 
-    const account = await Account.findOne({ userId: req.user.id });
-
-    if (!account) {
-      console.log(`[${req.id}] ❌ No account found for user:`, req.user.id);
-      return res.status(404).json({
-        success: false,
-        message: "Account not found",
-      });
-    }
-
-    console.log(`[${req.id}] ✅ Account found:`, account.accountNumber);
-
-    // ✅ SAFE decryption - handle null/undefined values
-    let phoneNumber = "Not provided";
-    let idNumber = "Not provided";
-
-    try {
-      if (account.contactInfo?.phoneNumber) {
-        phoneNumber = decryptSensitiveData(account.contactInfo.phoneNumber);
-        console.log(`[${req.id}] ✅ Phone decrypted successfully`);
-      }
-    } catch (decryptErr) {
-      console.warn(
-        `[${req.id}] ⚠ Could not decrypt phone:`,
-        decryptErr.message
-      );
-      phoneNumber = account.contactInfo?.phoneNumber || "Not provided";
-    }
-
-    try {
-      if (account.identification?.idNumber) {
-        idNumber = decryptSensitiveData(account.identification.idNumber);
-        console.log(`[${req.id}] ✅ ID decrypted successfully`);
-      }
-    } catch (decryptErr) {
-      console.warn(`[${req.id}] ⚠ Could not decrypt ID:`, decryptErr.message);
-      idNumber = account.identification?.idNumber || "Not provided";
-    }
-
-    // ✅ Return safe data
-    const responseData = {
-      success: true,
-      account: {
-        accountNumber: account.accountNumber,
-        accountType: account.accountType,
-        balance: account.balance,
-        currency: account.currency,
-        status: account.status,
-        verificationLevel: account.verificationLevel,
-        personalInfo: {
-          firstName: account.personalInfo?.firstName || "Not provided",
-          lastName: account.personalInfo?.lastName || "Not provided",
-          dateOfBirth: account.personalInfo?.dateOfBirth || null,
-        },
-        contactInfo: {
-          phoneNumber,
-          address: account.contactInfo?.address || "Not provided",
-          city: account.contactInfo?.city || "Not provided",
-          state: account.contactInfo?.state || "Not provided",
-          postalCode: account.contactInfo?.postalCode || "Not provided",
-          country: account.contactInfo?.country || "Ghana",
-        },
-        identification: {
-          idType: account.identification?.idType || "Not provided",
-          idNumber,
-          verified: account.identification?.verified || false,
-        },
-        employment: {
-          occupation: account.employment?.occupation || "Not provided",
-          monthlyIncome: account.employment?.monthlyIncome || 0,
-        },
-        createdAt: account.createdAt,
-      },
-    };
-
-    console.log(`[${req.id}] ✅ Account details response ready`);
-    res.json(responseData);
-  } catch (error) {
-    console.error(`[${req.id}] ❌ Get account details error:`, error);
-    console.error(`[${req.id}] Error stack:`, error.stack);
-    res.status(500).json({
-      success: false,
-      message: "Server error: " + error.message,
-      requestId: req.id,
-    });
-  }
-});
-
-// Update account information
-router.put("/update", authMiddleware, async (req, res) => {
-  try {
-    const {
-      phoneNumber,
-      address,
-      city,
-      state,
-      postalCode,
-      occupation,
-      monthlyIncome,
-    } = req.body;
-
-    const account = await Account.findOne({ userId: req.user.id });
-
-    if (!account) {
-      return res.status(404).json({
-        success: false,
-        message: "Account not found",
-      });
-    }
-
-    // ✅ VALIDATE AND UPDATE allowed fields
-    if (phoneNumber) {
-      const phoneValidation = validatePhoneNumber(phoneNumber);
-      if (!phoneValidation.valid) {
-        return res.status(400).json({
-          success: false,
-          message: phoneValidation.error,
-        });
-      }
-      account.contactInfo.phoneNumber = encryptSensitiveData(
-        phoneValidation.phoneNumber
-      );
-      // ✅ Update searchable phone field
-      account.searchablePhone = phoneValidation.phoneNumber.replace(/\D/g, "");
-    }
-
-    if (address) {
-      if (address.length < 5 || address.length > 200) {
-        return res.status(400).json({
-          success: false,
-          message: "Address must be between 5 and 200 characters",
-        });
-      }
-      account.contactInfo.address = sanitizeString(address, 200);
-    }
-
-    if (city) {
-      account.contactInfo.city = sanitizeString(city, 100);
-    }
-
-    if (state) {
-      account.contactInfo.state = sanitizeString(state, 100);
-    }
-
-    if (postalCode) {
-      account.contactInfo.postalCode = sanitizeString(postalCode, 20);
-    }
-
-    if (occupation) {
-      if (occupation.length < 2 || occupation.length > 100) {
-        return res.status(400).json({
-          success: false,
-          message: "Occupation must be between 2 and 100 characters",
-        });
-      }
-      account.employment.occupation = sanitizeString(occupation, 100);
-    }
-
-    if (monthlyIncome !== undefined) {
-      if (monthlyIncome < 0 || monthlyIncome > 10000000) {
-        return res.status(400).json({
-          success: false,
-          message: "Invalid monthly income",
-        });
-      }
-      account.employment.monthlyIncome = monthlyIncome;
-    }
-
-    await account.save();
-
-    res.json({
-      success: true,
-      message: "Account updated successfully",
-      account: {
-        accountNumber: account.accountNumber,
-        status: account.status,
-      },
-    });
-  } catch (error) {
-    console.error(`[${req.id}] ❌ Update account error:`, error);
-    res.status(500).json({
-      success: false,
-      message: "Server error",
-    });
-  }
-});
-
-// Check if user has completed account setup
-router.get("/check", authMiddleware, async (req, res) => {
-  try {
-    console.log(`[${req.id}] 🔍 Checking account for user:`, req.user.id);
-
-    const account = await Account.findOne({ userId: req.user.id });
-
-    res.json({
-      success: true,
-      hasAccount: !!account,
-      accountNumber: account?.accountNumber || null,
-      profileCompleted: account?.personalInfo?.firstName ? true : false,
-      status: account?.status || null,
-    });
-  } catch (error) {
-    console.error(`[${req.id}] ❌ Check account error:`, error);
-    res.status(500).json({
-      success: false,
-      message: "Server error",
-    });
-  }
-});
-
-// Update account status (freeze/unfreeze/close)
-router.patch("/userAccountStatus", authMiddleware, async (req, res) => {
-  try {
-    const { status } = req.body;
-
-    if (!["active", "frozen", "closed"].includes(status)) {
-      return res.status(400).json({
-        success: false,
-        message: "Invalid status. Must be: active, frozen, or closed",
-      });
-    }
-
-    const account = await Account.findOne({ userId: req.user.id });
-
-    if (!account) {
-      return res.status(404).json({
-        success: false,
-        message: "Account not found",
-      });
-    }
-
-    const previousStatus = account.status;
-    account.status = status;
-    await account.save();
-
     console.log(
-      `[${req.id}] 📝 Account status updated:`,
-      previousStatus,
-      "->",
-      status
+      `[${req.id}] ✅ Paystack transaction initialized:`,
+      paystackResponse.data.data.reference
     );
 
     res.json({
       success: true,
-      message: `Account status changed from ${previousStatus} to ${status}`,
-      status: account.status,
+      message: "Payment initialization successful",
+      authorizationUrl: paystackResponse.data.data.authorization_url,
+      reference: paystackResponse.data.data.reference,
     });
   } catch (err) {
-    console.error(`[${req.id}] ❌ Status update error:`, err.message);
+    console.error(`[${req.id}] ❌ Paystack initialization error:`, err.message);
+    res.status(400).json({
+      success: false,
+      message: "Failed to initialize payment",
+    });
+  }
+});
+
+// ✅ PAYSTACK: Verify & Complete Deposit
+router.post("/paystack/verify/:reference", authMiddleware, async (req, res) => {
+  const session = await mongoose.startSession();
+  session.startTransaction();
+
+  try {
+    const { reference } = req.params;
+
+    console.log(`[${req.id}] 🔄 Verifying Paystack payment:`, reference);
+
+    // Verify with Paystack API
+    const paystackResponse = await axios.get(
+      `https://api.paystack.co/transaction/verify/${reference}`,
+      {
+        headers: {
+          Authorization: `Bearer ${process.env.PAYSTACK_SECRET_KEY}`,
+        },
+      }
+    );
+
+    if (paystackResponse.data.data.status !== "success") {
+      await session.abortTransaction();
+      return res.status(400).json({
+        success: false,
+        message: "Payment verification failed",
+        status: paystackResponse.data.data.status,
+      });
+    }
+
+    console.log(`[${req.id}] ✅ Paystack payment verified`);
+
+    const paystackData = paystackResponse.data.data;
+    const amount = paystackData.amount / 100; // Convert from cents
+
+    const account = await Account.findOne({ userId: req.user.id }).session(
+      session
+    );
+    if (!account) {
+      throw new Error("Account not found");
+    }
+
+    // Check if deposit already processed (idempotency)
+    const existingPayment = await Payment.findOne({
+      paymentReference: reference,
+    }).session(session);
+    if (existingPayment && existingPayment.status === "completed") {
+      await session.commitTransaction();
+      return res.status(201).json({
+        success: true,
+        message: "Deposit already processed",
+        payment: existingPayment,
+        newBalance: account.balance,
+      });
+    }
+
+    // ✅ Create payment record
+    const payment = new Payment({
+      accountId: account._id,
+      paymentMethod: "mobile_money",
+      amount,
+      currency: account.currency,
+      status: "completed",
+      recipient: {
+        name: "Mobile Money Deposit",
+        phone: encryptSensitiveData(paystackData.metadata.phoneNumber),
+        network: paystackData.metadata.network,
+      },
+      paymentReference: reference,
+      processedAt: new Date(),
+    });
+
+    // ✅ Create transaction record (CREDIT)
+    const balanceBefore = account.balance;
+    account.balance += amount;
+    const balanceAfter = account.balance;
+
+    console.log(
+      `[${req.id}] 💳 Balance updated: ${balanceBefore} → ${balanceAfter}`
+    );
+
+    const transaction = new Transaction({
+      accountId: account._id,
+      type: "deposit",
+      amount,
+      currency: account.currency,
+      status: "completed",
+      description: `Mobile money deposit via ${paystackData.metadata.network}`,
+      balanceBefore,
+      balanceAfter,
+      reference,
+      metadata: {
+        paystackReference: paystackData.reference,
+        network: paystackData.metadata.network,
+        ipAddress: req.ip,
+        userAgent: req.get("user-agent"),
+      },
+      completedAt: new Date(),
+    });
+
+    payment.transactionId = transaction._id;
+
+    await account.save({ session });
+    await transaction.save({ session });
+    await payment.save({ session });
+
+    await session.commitTransaction();
+
+    console.log(`[${req.id}] ✅ Deposit completed successfully`);
+
+    return res.status(201).json({
+      success: true,
+      message: "Deposit completed successfully",
+      payment,
+      newBalance: account.balance,
+    });
+  } catch (err) {
+    await session.abortTransaction();
+    console.error(`[${req.id}] ❌ Paystack verification error:`, err.message);
     res.status(400).json({
       success: false,
       message: err.message,
     });
+  } finally {
+    session.endSession();
   }
 });
 
-// Get account by account number (for transfers)
-router.get("/number/:accountNumber", authMiddleware, async (req, res) => {
+// ✅ PAYSTACK: Handle payment.success webhook
+router.post("/paystack/webhook", express.json(), (req, res) => {
   try {
-    const account = await Account.findOne({
-      accountNumber: req.params.accountNumber,
-    }).select("accountNumber accountType status -_id");
+    // ✅ VERIFY WEBHOOK SIGNATURE
+    if (!verifyPaystackSignature(req)) {
+      console.error("[WEBHOOK] ❌ Invalid Paystack signature");
+      return res.status(401).json({
+        success: false,
+        message: "Invalid signature",
+      });
+    }
 
+    const event = req.body;
+    console.log("[WEBHOOK] ✅ Paystack webhook received:", event.event);
+
+    // You can process webhook events here
+    if (event.event === "charge.success") {
+      console.log("[WEBHOOK] 💰 Payment successful:", event.data.reference);
+    }
+
+    res.json({ success: true });
+  } catch (err) {
+    console.error("[WEBHOOK] ❌ Webhook error:", err.message);
+    res.status(500).json({
+      success: false,
+      message: "Webhook processing failed",
+    });
+  }
+});
+
+// ✅ Get payment history with pagination
+router.get("/history", authMiddleware, async (req, res) => {
+  try {
+    console.log(`[${req.id}] 📜 Payment history request`, {
+      page: req.query.page,
+      limit: req.query.limit,
+      status: req.query.status,
+    });
+
+    const account = await Account.findOne({ userId: req.user.id });
     if (!account) {
       return res.status(404).json({
         success: false,
@@ -531,19 +573,36 @@ router.get("/number/:accountNumber", authMiddleware, async (req, res) => {
       });
     }
 
-    if (account.status !== "active") {
-      return res.status(400).json({
-        success: false,
-        message: "Account is not active",
-      });
-    }
+    // ✅ VALIDATE PAGINATION
+    const limit = Math.min(parseInt(req.query.limit) || 20, 100);
+    const page = Math.max(parseInt(req.query.page) || 1, 1);
+    const { status } = req.query;
+
+    const query = { accountId: account._id };
+    if (status) query.status = status;
+
+    const payments = await Payment.find(query)
+      .sort({ createdAt: -1 })
+      .limit(limit)
+      .skip((page - 1) * limit);
+
+    const count = await Payment.countDocuments(query);
+
+    console.log(`[${req.id}] ✅ Payment history retrieved:`, {
+      count,
+      page,
+      limit,
+    });
 
     res.json({
       success: true,
-      account,
+      payments,
+      totalPages: Math.ceil(count / limit),
+      currentPage: page,
+      total: count,
     });
   } catch (err) {
-    console.error(`[${req.id}] ❌ Account lookup error:`, err.message);
+    console.error(`[${req.id}] ❌ History fetch error:`, err.message);
     res.status(500).json({
       success: false,
       message: err.message,
@@ -551,71 +610,35 @@ router.get("/number/:accountNumber", authMiddleware, async (req, res) => {
   }
 });
 
-// ✅ LOOKUP ACCOUNT BY PHONE NUMBER (uses searchablePhone)
-router.get("/lookup", authMiddleware, async (req, res) => {
+// ✅ Get payment status by reference
+router.get("/status/:reference", authMiddleware, async (req, res) => {
   try {
-    const { phone } = req.query;
-
-    if (!phone) {
-      return res.status(400).json({
-        success: false,
-        message: "Phone number is required",
-      });
-    }
-
-    // Normalize phone number (remove +, spaces, etc.)
-    const normalizedPhone = phone.replace(/\D/g, "");
-
     console.log(
-      `[${req.id}] 🔍 Looking up account for phone:`,
-      normalizedPhone
+      `[${req.id}] 🔍 Checking payment status:`,
+      req.params.reference
     );
 
-    // ✅ SEARCH using searchablePhone field (unencrypted, searchable)
-    const account = await Account.findOne({
-      searchablePhone: normalizedPhone,
-    });
+    const account = await Account.findOne({ userId: req.user.id });
+    const payment = await Payment.findOne({
+      paymentReference: req.params.reference,
+      accountId: account._id,
+    }).populate("transactionId");
 
-    if (!account) {
-      console.log(
-        `[${req.id}] ❌ No account found for phone:`,
-        normalizedPhone
-      );
+    if (!payment) {
       return res.status(404).json({
         success: false,
-        message: "Account not found",
+        message: "Payment not found",
       });
     }
 
-    if (account.status !== "active") {
-      return res.status(400).json({
-        success: false,
-        message: "Account is not active",
-      });
-    }
-
-    console.log(`[${req.id}] ✅ Account found:`, account.accountNumber);
-
-    // ✅ Safe decryption for response
-    let phoneDisplay = "N/A";
-    try {
-      if (account.contactInfo?.phoneNumber) {
-        phoneDisplay = decryptSensitiveData(account.contactInfo.phoneNumber);
-      }
-    } catch (e) {
-      phoneDisplay = account.contactInfo?.phoneNumber || "N/A";
-    }
+    console.log(`[${req.id}] ✅ Payment status:`, payment.status);
 
     res.json({
       success: true,
-      accountNumber: account.accountNumber,
-      phoneNumber: phoneDisplay,
-      accountHolder: `${account.personalInfo?.firstName || "User"} ${
-        account.personalInfo?.lastName || ""
-      }`.trim(),
+      payment,
     });
   } catch (err) {
-    console.error(`[${req.id}] ❌ Lookup error:`, err);
+    console.error(`[${req.id}] ❌ Status fetch error:`, err.message);
     res.status(500).json({
       success: false,
       message: err.message,
@@ -623,27 +646,100 @@ router.get("/lookup", authMiddleware, async (req, res) => {
   }
 });
 
-// ✅ GET ACCOUNT BY ID
+// ✅ Get single payment by ID
 router.get("/:id", authMiddleware, async (req, res) => {
   try {
-    const account = await Account.findById(req.params.id);
+    console.log(`[${req.id}] 🔍 Fetching payment:`, req.params.id);
 
-    if (!account) {
+    const account = await Account.findOne({ userId: req.user.id });
+    const payment = await Payment.findOne({
+      _id: req.params.id,
+      accountId: account._id,
+    }).populate("transactionId");
+
+    if (!payment) {
       return res.status(404).json({
         success: false,
-        message: "Account not found",
+        message: "Payment not found",
       });
     }
 
+    console.log(`[${req.id}] ✅ Payment retrieved`);
+
     res.json({
       success: true,
-      account,
+      payment,
     });
   } catch (err) {
+    console.error(`[${req.id}] ❌ Payment fetch error:`, err.message);
     res.status(500).json({
       success: false,
       message: err.message,
     });
+  }
+});
+
+// ✅ Cancel pending payment
+router.patch("/:id/cancel", authMiddleware, async (req, res) => {
+  const session = await mongoose.startSession();
+  session.startTransaction();
+
+  try {
+    console.log(`[${req.id}] ❌ Cancelling payment:`, req.params.id);
+
+    const account = await Account.findOne({ userId: req.user.id }).session(
+      session
+    );
+    const payment = await Payment.findOne({
+      _id: req.params.id,
+      accountId: account._id,
+    }).session(session);
+
+    if (!payment) {
+      throw new Error("Payment not found");
+    }
+
+    if (payment.status !== "pending" && payment.status !== "processing") {
+      throw new Error("Cannot cancel this payment");
+    }
+
+    // Refund amount back to account
+    const refundAmount = payment.amount;
+    account.balance += refundAmount;
+    payment.status = "failed";
+
+    // Update transaction status
+    const transaction = await Transaction.findById(
+      payment.transactionId
+    ).session(session);
+    if (transaction) {
+      transaction.status = "cancelled";
+      await transaction.save({ session });
+    }
+
+    await account.save({ session });
+    await payment.save({ session });
+
+    await session.commitTransaction();
+
+    console.log(`[${req.id}] ✅ Payment cancelled - Refunded ₵${refundAmount}`);
+
+    res.json({
+      success: true,
+      message: "Payment cancelled successfully",
+      payment,
+      refundedAmount,
+      newBalance: account.balance,
+    });
+  } catch (err) {
+    await session.abortTransaction();
+    console.error(`[${req.id}] ❌ Payment cancellation error:`, err.message);
+    res.status(400).json({
+      success: false,
+      message: err.message,
+    });
+  } finally {
+    session.endSession();
   }
 });
 
