@@ -1,5 +1,6 @@
-// =============== utils/helpers.js (UPDATED - FIXED GHANA PHONE VALIDATION) ===============
+// =============== utils/helpers.js (COMPLETE - ALL EXPORTS) ===============
 import crypto from "crypto";
+import Account from "../models/Account.js";
 
 // ✅ ENCRYPTION/DECRYPTION for PII
 const ENCRYPTION_KEY = process.env.ENCRYPTION_KEY || crypto.randomBytes(32);
@@ -271,6 +272,33 @@ export const generateReference = (type) => {
   );
 };
 
+// ✅ ACCOUNT NUMBER GENERATION
+export const generateAccountNumber = async () => {
+  const MAX_RETRIES = 10;
+
+  for (let i = 0; i < MAX_RETRIES; i++) {
+    const prefix = "10";
+    const randomDigits = Math.floor(Math.random() * 100000000)
+      .toString()
+      .padStart(8, "0");
+    const accountNumber = prefix + randomDigits;
+
+    // Check if account number already exists
+    const existing = await Account.findOne({ accountNumber });
+    if (!existing) {
+      console.log(`✅ Generated unique account number: ${accountNumber}`);
+      return accountNumber;
+    }
+  }
+
+  throw new Error("Failed to generate unique account number after 10 attempts");
+};
+
+// ✅ VERIFICATION CODE GENERATION
+export const generateVerificationCode = () => {
+  return Math.floor(100000 + Math.random() * 900000).toString();
+};
+
 // ✅ IDEMPOTENCY KEY VALIDATION
 export const validateIdempotencyKey = (key) => {
   if (!key) return false;
@@ -285,7 +313,7 @@ export const validateNetwork = (network) => {
 
 // ✅ ACCOUNT STATUS VALIDATION
 export const validateAccountStatus = (status) => {
-  const validStatuses = ["active", "frozen", "closed"];
+  const validStatuses = ["active", "frozen", "closed", "pending"];
   return validStatuses.includes(status?.toLowerCase());
 };
 
@@ -437,6 +465,7 @@ export const logTransaction = (requestId, message, data = {}) => {
   console.log(`[${requestId}] ${message}`, data);
 };
 
+// ✅ DEFAULT EXPORT
 export default {
   encryptSensitiveData,
   decryptSensitiveData,
@@ -446,6 +475,8 @@ export default {
   validateEmail,
   sanitizeString,
   generateReference,
+  generateAccountNumber,
+  generateVerificationCode,
   validateIdempotencyKey,
   validateNetwork,
   validateAccountStatus,
