@@ -1,4 +1,4 @@
-// =============== models/Account.js (COMPLETE REPLACEMENT) ===============
+// =============== models/Account.js (NO ENCRYPTION) ===============
 import mongoose from "mongoose";
 
 const accountSchema = new mongoose.Schema(
@@ -63,9 +63,11 @@ const accountSchema = new mongoose.Schema(
 
     // Contact Information
     contactInfo: {
+      // ✅ PLAIN TEXT - No encryption
       phoneNumber: {
         type: String,
-        required: false, // Encrypted
+        required: false,
+        index: true, // Add index for fast lookups
       },
       address: {
         type: String,
@@ -89,14 +91,6 @@ const accountSchema = new mongoose.Schema(
       },
     },
 
-    // ✅ SEARCHABLE PHONE - Unencrypted for lookups
-    searchablePhone: {
-      type: String,
-      index: true,
-      default: null,
-      sparse: true,
-    },
-
     // Identification
     identification: {
       idType: {
@@ -104,9 +98,11 @@ const accountSchema = new mongoose.Schema(
         enum: ["passport", "national_id", "drivers_license", "voter_id", ""],
         required: false,
       },
+      // ✅ PLAIN TEXT - No encryption
       idNumber: {
         type: String,
-        required: false, // Encrypted
+        required: false,
+        index: true, // Add index for fast lookups
       },
       verified: {
         type: Boolean,
@@ -147,7 +143,8 @@ accountSchema.index({ userId: 1 });
 accountSchema.index({ accountNumber: 1 });
 accountSchema.index({ status: 1 });
 accountSchema.index({ createdAt: -1 });
-accountSchema.index({ searchablePhone: 1, status: 1 }); // ✅ Compound index
+accountSchema.index({ "contactInfo.phoneNumber": 1 }); // ✅ Phone number lookup
+accountSchema.index({ "identification.idNumber": 1 }); // ✅ ID number lookup
 
 // ✅ Soft delete query helper
 accountSchema.query.notDeleted = function () {

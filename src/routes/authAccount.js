@@ -1,14 +1,18 @@
-// ================== routes/authAccount.js ==================
+// ================== routes/authAccount.js (NO ENCRYPTION) ==================
 import express from "express";
 import Account from "../models/Account.js";
 import User from "../models/user.js";
 import authMiddleware from "../middleware/auth.js";
 import mongoose from "mongoose";
-import { generateAccountNumber, generateReference } from "../utils/helpers.js";
+import {
+  generateAccountNumber,
+  validatePhoneNumber,
+  validateIdNumber,
+} from "../utils/helpers.js";
 
 const router = express.Router();
 
-// ✅ GET user's account (NO PARAMETERS - THIS IS THE FIX)
+// ✅ GET user's account details
 router.get("/details", authMiddleware, async (req, res) => {
   try {
     console.log(
@@ -74,11 +78,37 @@ router.post("/setup", authMiddleware, async (req, res) => {
       city,
       state,
       postalCode,
+      idType,
+      idNumber,
       occupation,
       monthlyIncome,
     } = req.body;
 
     console.log(`[${req.id}] 📝 Setting up account for user:`, req.user.id);
+
+    // ✅ Validate phone number if provided
+    if (phoneNumber) {
+      const phoneValidation = validatePhoneNumber(phoneNumber);
+      if (!phoneValidation.valid) {
+        await session.abortTransaction();
+        return res.status(400).json({
+          success: false,
+          message: phoneValidation.error,
+        });
+      }
+    }
+
+    // ✅ Validate ID number if provided
+    if (idNumber) {
+      const idValidation = validateIdNumber(idNumber, idType);
+      if (!idValidation.valid) {
+        await session.abortTransaction();
+        return res.status(400).json({
+          success: false,
+          message: idValidation.error,
+        });
+      }
+    }
 
     // Find user
     const user = await User.findById(req.user.id).session(session);
@@ -118,7 +148,7 @@ router.post("/setup", authMiddleware, async (req, res) => {
       };
     }
 
-    // Update contact information
+    // ✅ Update contact information - NO ENCRYPTION
     if (phoneNumber || address || city || state || postalCode) {
       account.contactInfo = {
         phoneNumber: phoneNumber || account.contactInfo?.phoneNumber,
@@ -127,6 +157,15 @@ router.post("/setup", authMiddleware, async (req, res) => {
         state: state || account.contactInfo?.state,
         postalCode: postalCode || account.contactInfo?.postalCode,
         country: "Ghana",
+      };
+    }
+
+    // ✅ Update identification - NO ENCRYPTION
+    if (idType || idNumber) {
+      account.identification = {
+        idType: idType || account.identification?.idType,
+        idNumber: idNumber || account.identification?.idNumber, // Plain text
+        verified: account.identification?.verified || false,
       };
     }
 
@@ -183,9 +222,35 @@ router.put("/update", authMiddleware, async (req, res) => {
       city,
       state,
       postalCode,
+      idType,
+      idNumber,
       occupation,
       monthlyIncome,
     } = req.body;
+
+    // ✅ Validate phone number if provided
+    if (phoneNumber) {
+      const phoneValidation = validatePhoneNumber(phoneNumber);
+      if (!phoneValidation.valid) {
+        await session.abortTransaction();
+        return res.status(400).json({
+          success: false,
+          message: phoneValidation.error,
+        });
+      }
+    }
+
+    // ✅ Validate ID number if provided
+    if (idNumber) {
+      const idValidation = validateIdNumber(idNumber, idType);
+      if (!idValidation.valid) {
+        await session.abortTransaction();
+        return res.status(400).json({
+          success: false,
+          message: idValidation.error,
+        });
+      }
+    }
 
     const account = await Account.findOne({ userId: req.user.id }).session(
       session
@@ -199,12 +264,18 @@ router.put("/update", authMiddleware, async (req, res) => {
       });
     }
 
-    // Update fields
+    // Update contact info - NO ENCRYPTION
     if (phoneNumber) account.contactInfo.phoneNumber = phoneNumber;
     if (address) account.contactInfo.address = address;
     if (city) account.contactInfo.city = city;
     if (state) account.contactInfo.state = state;
     if (postalCode) account.contactInfo.postalCode = postalCode;
+
+    // Update identification - NO ENCRYPTION
+    if (idType) account.identification.idType = idType;
+    if (idNumber) account.identification.idNumber = idNumber;
+
+    // Update employment
     if (occupation) account.employment.occupation = occupation;
     if (monthlyIncome) account.employment.monthlyIncome = monthlyIncome;
 
@@ -230,7 +301,7 @@ router.put("/update", authMiddleware, async (req, res) => {
   }
 });
 
-// ✅ Get account details (alternative endpoint)
+// ✅ Get account by account number (for transfers)
 router.get("/number/:accountNumber", authMiddleware, async (req, res) => {
   try {
     const account = await Account.findOne({
@@ -294,7 +365,7 @@ router.patch("/userAccountStatus", authMiddleware, async (req, res) => {
   }
 });
 
-// ✅ Lookup account by phone (for transfers)
+// ✅ Lookup account by phone or account number
 router.get("/lookup", authMiddleware, async (req, res) => {
   try {
     const { phone, accountNumber } = req.query;
@@ -308,10 +379,10 @@ router.get("/lookup", authMiddleware, async (req, res) => {
 
     let query = {};
     if (accountNumber) query.accountNumber = accountNumber;
-    if (phone) query["contactInfo.phoneNumber"] = phone;
+    if (phone) query["contactInfo.phoneNumber"] = phone; // Plain text lookup
 
     const account = await Account.findOne(query).select(
-      "accountNumber personalInfo status"
+      "accountNumber personalInfo status contactInfo"
     );
 
     if (!account) {

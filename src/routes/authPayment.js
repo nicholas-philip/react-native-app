@@ -1,3 +1,4 @@
+// =============== routes/authPayment.js (COMPLETE - NO ENCRYPTION) ===============
 import express from "express";
 import axios from "axios";
 import Payment from "../models/Payment.js";
@@ -9,8 +10,6 @@ import {
   generateReference,
   validateAmount,
   validatePhoneNumber,
-  encryptSensitiveData,
-  decryptSensitiveData,
 } from "../utils/helpers.js";
 import crypto from "crypto";
 
@@ -42,6 +41,12 @@ router.post("/initiate", authMiddleware, async (req, res) => {
       idempotencyKey, // For idempotency
     } = req.body;
 
+    console.log(`[${req.id}] 💳 Payment initiate request:`, {
+      amount,
+      paymentMethod,
+      recipient: recipient?.name,
+    });
+
     // ✅ INPUT VALIDATION
     if (!amount) {
       throw new Error("Amount is required");
@@ -66,6 +71,9 @@ router.post("/initiate", authMiddleware, async (req, res) => {
         session
       );
       if (existingPayment) {
+        console.log(
+          `[${req.id}] ℹ️ Idempotent request - returning existing payment`
+        );
         await session.commitTransaction();
         return res.status(201).json({
           success: true,
@@ -82,19 +90,26 @@ router.post("/initiate", authMiddleware, async (req, res) => {
       throw new Error("Account not found");
     }
 
+    console.log(`[${req.id}] 📊 Account status:`, account.status);
+
     if (account.status !== "active") {
       throw new Error(`Account is ${account.status}. Cannot process payments.`);
     }
 
     // Check balance for payments
     if (account.balance < validatedAmount.amount) {
-      throw new Error("Insufficient funds");
+      throw new Error(
+        `Insufficient funds. Balance: ₵${account.balance}, Required: ₵${validatedAmount.amount}`
+      );
     }
 
     const paymentReference = generateReference("payment");
+    console.log(`[${req.id}] 📝 Generated reference:`, paymentReference);
 
     // ✅ WALLET OR CARD PAYMENT (Pay bills)
     if (paymentMethod === "wallet" || paymentMethod === "card") {
+      console.log(`[${req.id}] 💰 Processing ${paymentMethod} payment`);
+
       if (!recipient || !recipient.name) {
         throw new Error("Recipient name is required");
       }
@@ -108,6 +123,10 @@ router.post("/initiate", authMiddleware, async (req, res) => {
       const balanceBefore = account.balance;
       account.balance -= validatedAmount.amount;
       const balanceAfter = account.balance;
+
+      console.log(
+        `[${req.id}] 💸 Balance change: ${balanceBefore} → ${balanceAfter}`
+      );
 
       const payment = new Payment({
         accountId: account._id,
@@ -149,6 +168,8 @@ router.post("/initiate", authMiddleware, async (req, res) => {
 
       await session.commitTransaction();
 
+      console.log(`[${req.id}] ✅ Payment completed successfully`);
+
       return res.status(201).json({
         success: true,
         message: "Payment completed successfully",
@@ -159,6 +180,8 @@ router.post("/initiate", authMiddleware, async (req, res) => {
 
     // ✅ TRANSFER TO ANOTHER USER
     if (paymentMethod === "transfer") {
+      console.log(`[${req.id}] 🔄 Processing transfer`);
+
       if (!recipient || !recipient.accountNumber) {
         throw new Error("Recipient account number is required");
       }
@@ -170,6 +193,11 @@ router.post("/initiate", authMiddleware, async (req, res) => {
       if (!recipientAccount) {
         throw new Error("Recipient account not found");
       }
+
+      console.log(
+        `[${req.id}] 📋 Recipient account:`,
+        recipientAccount.accountNumber
+      );
 
       if (recipientAccount.status !== "active") {
         throw new Error("Recipient account is not active");
@@ -183,6 +211,10 @@ router.post("/initiate", authMiddleware, async (req, res) => {
       const senderBalanceBefore = account.balance;
       account.balance -= validatedAmount.amount;
       const senderBalanceAfter = account.balance;
+
+      console.log(
+        `[${req.id}] 💸 Sender balance: ${senderBalanceBefore} → ${senderBalanceAfter}`
+      );
 
       const senderPayment = new Payment({
         accountId: account._id,
@@ -223,6 +255,10 @@ router.post("/initiate", authMiddleware, async (req, res) => {
       recipientAccount.balance += validatedAmount.amount;
       const recipientBalanceAfter = recipientAccount.balance;
 
+      console.log(
+        `[${req.id}] 💳 Recipient balance: ${recipientBalanceBefore} → ${recipientBalanceAfter}`
+      );
+
       const recipientTransaction = new Transaction({
         accountId: recipientAccount._id,
         type: "transfer_in",
@@ -249,6 +285,8 @@ router.post("/initiate", authMiddleware, async (req, res) => {
 
       await session.commitTransaction();
 
+      console.log(`[${req.id}] ✅ Transfer completed successfully`);
+
       return res.status(201).json({
         success: true,
         message: "Transfer completed successfully",
@@ -274,10 +312,16 @@ router.post("/initiate", authMiddleware, async (req, res) => {
   }
 });
 
-// ✅ PAYSTACK WEBHOOK (Initialize Mobile Money Payment)
+// ✅ PAYSTACK: Initialize Mobile Money Payment
 router.post("/paystack/initialize", authMiddleware, async (req, res) => {
   try {
     const { amount, email, phoneNumber, network } = req.body;
+
+    console.log(`[${req.id}] 📱 Paystack initialization request:`, {
+      amount,
+      network,
+      phoneNumber: phoneNumber?.substring(0, 6) + "****",
+    });
 
     // ✅ INPUT VALIDATION
     const validatedAmount = validateAmount(amount);
@@ -311,6 +355,8 @@ router.post("/paystack/initialize", authMiddleware, async (req, res) => {
       });
     }
 
+    console.log(`[${req.id}] 📊 Account found:`, account.accountNumber);
+
     // Call Paystack to initialize transaction
     const paystackResponse = await axios.post(
       "https://api.paystack.co/transaction/initialize",
@@ -321,7 +367,7 @@ router.post("/paystack/initialize", authMiddleware, async (req, res) => {
           userId: req.user.id,
           accountNumber: account.accountNumber,
           network,
-          phoneNumber: encryptSensitiveData(phoneNumber),
+          phoneNumber: phoneValidation.phoneNumber, // ✅ Plain text - NO encryption
         },
       },
       {
@@ -330,6 +376,7 @@ router.post("/paystack/initialize", authMiddleware, async (req, res) => {
         },
       }
     );
+
     console.log(
       `[${req.id}] ✅ Paystack transaction initialized:`,
       paystackResponse.data.data.reference
@@ -350,7 +397,7 @@ router.post("/paystack/initialize", authMiddleware, async (req, res) => {
   }
 });
 
-// ✅ PAYSTACK WEBHOOK - Verify & Complete Deposit
+// ✅ PAYSTACK: Verify & Complete Deposit
 router.post("/paystack/verify/:reference", authMiddleware, async (req, res) => {
   const session = await mongoose.startSession();
   session.startTransaction();
@@ -358,9 +405,9 @@ router.post("/paystack/verify/:reference", authMiddleware, async (req, res) => {
   try {
     const { reference } = req.params;
 
-    // Verify with Paystack API
     console.log(`[${req.id}] 🔄 Verifying Paystack payment:`, reference);
 
+    // Verify with Paystack API
     const paystackResponse = await axios.get(
       `https://api.paystack.co/transaction/verify/${reference}`,
       {
@@ -405,7 +452,7 @@ router.post("/paystack/verify/:reference", authMiddleware, async (req, res) => {
       });
     }
 
-    // ✅ Create payment record
+    // ✅ Create payment record - NO ENCRYPTION
     const payment = new Payment({
       accountId: account._id,
       paymentMethod: "mobile_money",
@@ -414,7 +461,7 @@ router.post("/paystack/verify/:reference", authMiddleware, async (req, res) => {
       status: "completed",
       recipient: {
         name: "Mobile Money Deposit",
-        phone: encryptSensitiveData(paystackData.metadata.phoneNumber),
+        phone: paystackData.metadata.phoneNumber, // ✅ Plain text - NO encryption
         network: paystackData.metadata.network,
       },
       paymentReference: reference,
@@ -425,6 +472,10 @@ router.post("/paystack/verify/:reference", authMiddleware, async (req, res) => {
     const balanceBefore = account.balance;
     account.balance += amount;
     const balanceAfter = account.balance;
+
+    console.log(
+      `[${req.id}] 💳 Balance updated: ${balanceBefore} → ${balanceAfter}`
+    );
 
     const transaction = new Transaction({
       accountId: account._id,
@@ -439,6 +490,7 @@ router.post("/paystack/verify/:reference", authMiddleware, async (req, res) => {
       metadata: {
         paystackReference: paystackData.reference,
         network: paystackData.metadata.network,
+        phoneNumber: paystackData.metadata.phoneNumber, // ✅ Plain text
         ipAddress: req.ip,
         userAgent: req.get("user-agent"),
       },
@@ -452,6 +504,8 @@ router.post("/paystack/verify/:reference", authMiddleware, async (req, res) => {
     await payment.save({ session });
 
     await session.commitTransaction();
+
+    console.log(`[${req.id}] ✅ Deposit completed successfully`);
 
     return res.status(201).json({
       success: true,
@@ -471,7 +525,7 @@ router.post("/paystack/verify/:reference", authMiddleware, async (req, res) => {
   }
 });
 
-// ✅ PAYSTACK WEBHOOK - Handle payment.success webhook
+// ✅ PAYSTACK: Handle payment.success webhook
 router.post("/paystack/webhook", express.json(), (req, res) => {
   try {
     // ✅ VERIFY WEBHOOK SIGNATURE
@@ -487,7 +541,6 @@ router.post("/paystack/webhook", express.json(), (req, res) => {
     console.log("[WEBHOOK] ✅ Paystack webhook received:", event.event);
 
     // You can process webhook events here
-    // For now, just acknowledge receipt
     if (event.event === "charge.success") {
       console.log("[WEBHOOK] 💰 Payment successful:", event.data.reference);
     }
@@ -502,9 +555,15 @@ router.post("/paystack/webhook", express.json(), (req, res) => {
   }
 });
 
-// Get payment history with pagination
+// ✅ Get payment history with pagination
 router.get("/history", authMiddleware, async (req, res) => {
   try {
+    console.log(`[${req.id}] 📜 Payment history request`, {
+      page: req.query.page,
+      limit: req.query.limit,
+      status: req.query.status,
+    });
+
     const account = await Account.findOne({ userId: req.user.id });
     if (!account) {
       return res.status(404).json({
@@ -528,6 +587,12 @@ router.get("/history", authMiddleware, async (req, res) => {
 
     const count = await Payment.countDocuments(query);
 
+    console.log(`[${req.id}] ✅ Payment history retrieved:`, {
+      count,
+      page,
+      limit,
+    });
+
     res.json({
       success: true,
       payments,
@@ -536,6 +601,7 @@ router.get("/history", authMiddleware, async (req, res) => {
       total: count,
     });
   } catch (err) {
+    console.error(`[${req.id}] ❌ History fetch error:`, err.message);
     res.status(500).json({
       success: false,
       message: err.message,
@@ -543,9 +609,14 @@ router.get("/history", authMiddleware, async (req, res) => {
   }
 });
 
-// Get payment status by reference
+// ✅ Get payment status by reference
 router.get("/status/:reference", authMiddleware, async (req, res) => {
   try {
+    console.log(
+      `[${req.id}] 🔍 Checking payment status:`,
+      req.params.reference
+    );
+
     const account = await Account.findOne({ userId: req.user.id });
     const payment = await Payment.findOne({
       paymentReference: req.params.reference,
@@ -559,11 +630,14 @@ router.get("/status/:reference", authMiddleware, async (req, res) => {
       });
     }
 
+    console.log(`[${req.id}] ✅ Payment status:`, payment.status);
+
     res.json({
       success: true,
       payment,
     });
   } catch (err) {
+    console.error(`[${req.id}] ❌ Status fetch error:`, err.message);
     res.status(500).json({
       success: false,
       message: err.message,
@@ -571,9 +645,11 @@ router.get("/status/:reference", authMiddleware, async (req, res) => {
   }
 });
 
-// Get single payment by ID
+// ✅ Get single payment by ID
 router.get("/:id", authMiddleware, async (req, res) => {
   try {
+    console.log(`[${req.id}] 🔍 Fetching payment:`, req.params.id);
+
     const account = await Account.findOne({ userId: req.user.id });
     const payment = await Payment.findOne({
       _id: req.params.id,
@@ -587,11 +663,14 @@ router.get("/:id", authMiddleware, async (req, res) => {
       });
     }
 
+    console.log(`[${req.id}] ✅ Payment retrieved`);
+
     res.json({
       success: true,
       payment,
     });
   } catch (err) {
+    console.error(`[${req.id}] ❌ Payment fetch error:`, err.message);
     res.status(500).json({
       success: false,
       message: err.message,
@@ -599,12 +678,14 @@ router.get("/:id", authMiddleware, async (req, res) => {
   }
 });
 
-// Cancel pending payment
+// ✅ Cancel pending payment
 router.patch("/:id/cancel", authMiddleware, async (req, res) => {
   const session = await mongoose.startSession();
   session.startTransaction();
 
   try {
+    console.log(`[${req.id}] ❌ Cancelling payment:`, req.params.id);
+
     const account = await Account.findOne({ userId: req.user.id }).session(
       session
     );
@@ -622,7 +703,8 @@ router.patch("/:id/cancel", authMiddleware, async (req, res) => {
     }
 
     // Refund amount back to account
-    account.balance += payment.amount;
+    const refundAmount = payment.amount;
+    account.balance += refundAmount;
     payment.status = "failed";
 
     // Update transaction status
@@ -639,11 +721,13 @@ router.patch("/:id/cancel", authMiddleware, async (req, res) => {
 
     await session.commitTransaction();
 
+    console.log(`[${req.id}] ✅ Payment cancelled - Refunded ₵${refundAmount}`);
+
     res.json({
       success: true,
       message: "Payment cancelled successfully",
       payment,
-      refundedAmount: payment.amount,
+      refundedAmount,
       newBalance: account.balance,
     });
   } catch (err) {
