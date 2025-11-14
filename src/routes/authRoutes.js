@@ -9,17 +9,17 @@ import nodemailer from "nodemailer";
 
 const router = express.Router();
 
-// ✅ Setup email transporter (BREVO) WITH POOL
+// ✅ Setup email transporter (BREVO)
 const transporter = nodemailer.createTransport({
   host: "smtp-relay.brevo.com",
   port: 587,
-  secure: false, // TLS
+  secure: false,
   auth: {
     user: process.env.SMTP_USER,
     pass: process.env.SMTP_PASS,
   },
-  connectionTimeout: 10000, // 10 seconds
-  socketTimeout: 15000, // 15 seconds
+  connectionTimeout: 10000,
+  socketTimeout: 15000,
   pool: {
     maxConnections: 5,
     maxMessages: 100,
@@ -28,60 +28,73 @@ const transporter = nodemailer.createTransport({
   },
 });
 
-// Verify transporter connection
+// Verify transporter on startup
 transporter.verify((error, success) => {
+  console.log("\n" + "═".repeat(100));
+  console.log("🔌 [TRANSPORTER-INIT] Email Service Initialization");
+  console.log("═".repeat(100));
+  console.log(`   SMTP_USER: ${process.env.SMTP_USER || "❌ NOT SET"}`);
+  console.log(`   SENDER_EMAIL: ${process.env.SENDER_EMAIL || "❌ NOT SET"}`);
+  console.log(`   Host: smtp-relay.brevo.com`);
+  console.log(`   Port: 587`);
+
   if (error) {
-    console.error("❌ Email transporter error:", error.message);
+    console.log(`\n   ❌ TRANSPORTER ERROR:`);
+    console.log(`      Message: ${error.message}`);
+    console.log(`      Code: ${error.code}`);
+    console.log(`      Command: ${error.command}`);
+    console.log(`\n   ACTION REQUIRED: Check your Brevo credentials!`);
   } else {
-    console.log("✅ Email transporter (Brevo) ready");
+    console.log(`\n   ✅ TRANSPORTER READY - Email service is working!`);
   }
+  console.log("═".repeat(100) + "\n");
 });
 
-// ✅ Create JWT token
 const createToken = (userId) => {
   return jwt.sign({ userId }, process.env.JWT_SECRET, {
     expiresIn: "7d",
   });
 };
 
-// ✅ Generate unique account number
 const generateAccountNumber = async () => {
   const MAX_RETRIES = 10;
-
   for (let i = 0; i < MAX_RETRIES; i++) {
     const prefix = "10";
     const randomDigits = Math.floor(Math.random() * 100000000)
       .toString()
       .padStart(8, "0");
     const accountNumber = prefix + randomDigits;
-
     const existing = await Account.findOne({ accountNumber });
     if (!existing) {
       return accountNumber;
     }
   }
-
   throw new Error("Failed to generate unique account number");
 };
 
-// ✅ Generate 6-digit verification code
 const generateVerificationCode = () => {
   return Math.floor(100000 + Math.random() * 900000).toString();
 };
 
-// ✅ Validate email format
 const validateEmail = (email) => {
   const regex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
   return regex.test(email);
 };
 
-// ✅ SEND VERIFICATION EMAIL WITH TIMEOUT & BACKGROUND TASK
+// ✅ SEND VERIFICATION EMAIL - DETAILED DEBUG LOGGING
 const sendVerificationEmail = async (email, code, username) => {
-  try {
-    console.log("\n📧 [EMAIL] Starting email send");
-    console.log(`   To: ${email}`);
-    console.log(`   Code: ${code}`);
+  const startTime = Date.now();
 
+  console.log("\n" + "═".repeat(100));
+  console.log("📧 [EMAIL-SEND] Starting verification email process");
+  console.log("═".repeat(100));
+  console.log(`   To: ${email}`);
+  console.log(`   Username: ${username}`);
+  console.log(`   Code: ${code}`);
+  console.log(`   From: ${process.env.SENDER_EMAIL}`);
+  console.log(`   Timestamp: ${new Date().toISOString()}`);
+
+  try {
     const mailOptions = {
       from: process.env.SENDER_EMAIL,
       to: email,
@@ -94,58 +107,63 @@ const sendVerificationEmail = async (email, code, username) => {
           </div>
           
           <div style="background-color: #f8f9fa; padding: 40px 20px; border-radius: 0 0 10px 10px;">
-            <p style="color: #333; font-size: 16px; margin: 0 0 20px 0;">
-              Hi <strong>${username}</strong>,
-            </p>
-            
-            <p style="color: #666; font-size: 14px; line-height: 1.6; margin: 0 0 30px 0;">
-              Thank you for signing up! Please verify your email address by entering the code below:
-            </p>
-            
+            <p style="color: #333; font-size: 16px; margin: 0 0 20px 0;">Hi <strong>${username}</strong>,</p>
+            <p style="color: #666; font-size: 14px; line-height: 1.6; margin: 0 0 30px 0;">Thank you for signing up! Please verify your email by entering this code:</p>
             <div style="background-color: #fff; padding: 30px; border-radius: 10px; border: 2px dashed #667eea; margin: 30px 0; text-align: center;">
-              <p style="color: #999; font-size: 12px; margin: 0 0 10px 0; text-transform: uppercase; letter-spacing: 1px;">Your verification code</p>
-              <div style="font-size: 48px; font-weight: bold; color: #667eea; letter-spacing: 8px; margin: 15px 0; font-family: 'Courier New', monospace;">
-                ${code}
-              </div>
-              <p style="color: #999; font-size: 12px; margin: 15px 0 0 0;">This code will expire in 10 minutes</p>
+              <p style="color: #999; font-size: 12px; margin: 0 0 10px 0; text-transform: uppercase;">Your verification code</p>
+              <div style="font-size: 48px; font-weight: bold; color: #667eea; letter-spacing: 8px; margin: 15px 0; font-family: 'Courier New', monospace;">${code}</div>
+              <p style="color: #999; font-size: 12px; margin: 15px 0 0 0;">Expires in 10 minutes</p>
             </div>
-
-            <p style="color: #666; font-size: 13px; line-height: 1.6; margin: 0 0 20px 0;">
-              If you didn't create this account, you can safely ignore this email.
-            </p>
-            
-            <hr style="border: none; border-top: 1px solid #ddd; margin: 30px 0;">
-            
-            <p style="color: #999; font-size: 11px; text-align: center; margin: 0;">
-              © 2024 Tasktuges. All rights reserved.<br>
-              This is an automated message, please do not reply.
-            </p>
           </div>
         </div>
       `,
     };
 
-    // ✅ Send with timeout wrapper (20 seconds)
-    const emailPromise = transporter.sendMail(mailOptions);
+    console.log(`   ✅ Mail options prepared`);
+    console.log(`   📤 Attempting to send via nodemailer...`);
+
+    // Create timeout
     const timeoutPromise = new Promise((_, reject) =>
-      setTimeout(() => reject(new Error("Email send timeout")), 20000)
+      setTimeout(() => reject(new Error("Email send timeout (20s)")), 20000)
     );
 
+    // Send with timeout
+    const emailPromise = transporter.sendMail(mailOptions);
     const info = await Promise.race([emailPromise, timeoutPromise]);
 
-    console.log(`✅ [EMAIL] Email sent successfully!`);
-    console.log(`   Message ID: ${info.messageId}`);
-    console.log(`   Accepted: ${JSON.stringify(info.accepted)}`);
+    const duration = Date.now() - startTime;
+
+    console.log(`\n   ✅ EMAIL SENT SUCCESSFULLY!`);
+    console.log(`      Message ID: ${info.messageId}`);
+    console.log(`      Response: ${info.response}`);
+    console.log(`      Accepted: ${JSON.stringify(info.accepted)}`);
+    console.log(`      Duration: ${duration}ms`);
+    console.log("═".repeat(100) + "\n");
 
     return true;
   } catch (error) {
-    console.error(`❌ [EMAIL] Email send FAILED!`);
-    console.error(`   Error: ${error.message}`);
+    const duration = Date.now() - startTime;
+
+    console.log(`\n   ❌ EMAIL SEND FAILED!`);
+    console.log(`      Error Name: ${error.name}`);
+    console.log(`      Error Message: ${error.message}`);
+    console.log(`      Error Code: ${error.code}`);
+    console.log(`      Error Command: ${error.command}`);
+    console.log(`      Duration: ${duration}ms`);
+    console.log(`\n   DEBUGGING INFO:`);
+    console.log(`      Transporter Host: ${transporter.options?.host}`);
+    console.log(`      Transporter Port: ${transporter.options?.port}`);
+    console.log(
+      `      Transporter Auth User: ${transporter.options?.auth?.user}`
+    );
+    console.log(`      Full Error:`, error);
+    console.log("═".repeat(100) + "\n");
+
     throw error;
   }
 };
 
-// ✅ REGISTER ROUTE - WITH BACKGROUND EMAIL
+// ✅ REGISTER ROUTE
 router.post("/register", async (req, res) => {
   const session = await mongoose.startSession();
   session.startTransaction();
@@ -157,7 +175,6 @@ router.post("/register", async (req, res) => {
     console.log(`   Username: ${username}`);
     console.log(`   Email: ${email}`);
 
-    // ✅ Validate inputs
     if (!username || !email || !password) {
       await session.abortTransaction();
       return res.status(400).json({
@@ -190,7 +207,6 @@ router.post("/register", async (req, res) => {
       });
     }
 
-    // ✅ Check if email exists
     const existingEmail = await User.findOne({
       email: email.toLowerCase(),
     }).session(session);
@@ -203,7 +219,6 @@ router.post("/register", async (req, res) => {
       });
     }
 
-    // ✅ Check if username exists
     const existingUsername = await User.findOne({
       username: username.toLowerCase(),
     }).session(session);
@@ -220,11 +235,8 @@ router.post("/register", async (req, res) => {
     const verificationCode = generateVerificationCode();
     const verificationCodeExpiresAt = new Date(Date.now() + 10 * 60 * 1000);
 
-    console.log(
-      `🔐 [REGISTER] Generated verification code: ${verificationCode}`
-    );
+    console.log(`   Generated code: ${verificationCode}`);
 
-    // ✅ CREATE USER
     const user = new User({
       username: username.toLowerCase(),
       email: email.toLowerCase(),
@@ -236,9 +248,8 @@ router.post("/register", async (req, res) => {
     });
 
     await user.save({ session });
-    console.log(`✅ [REGISTER] User created in DB: ${user.email}`);
+    console.log(`   ✅ User created in DB`);
 
-    // ✅ CREATE BASIC ACCOUNT
     const accountNumber = await generateAccountNumber();
     const account = new Account({
       userId: user._id,
@@ -251,17 +262,18 @@ router.post("/register", async (req, res) => {
     });
 
     await account.save({ session });
-    console.log(`✅ [REGISTER] Account created: ${account.accountNumber}`);
+    console.log(`   ✅ Account created`);
 
     user.accountId = account._id;
     await user.save({ session });
 
     await session.commitTransaction();
-    console.log(`✅ [REGISTER] Transaction committed`);
+    console.log(`   ✅ Transaction committed`);
 
     const token = createToken(user._id);
 
-    // ✅ SEND RESPONSE IMMEDIATELY (don't wait for email)
+    console.log(`   📤 Sending response to client...`);
+
     res.status(201).json({
       success: true,
       message: "User registered successfully. Check your email to verify.",
@@ -286,17 +298,18 @@ router.post("/register", async (req, res) => {
       },
     });
 
-    // ✅ SEND EMAIL IN BACKGROUND (fire and forget)
+    console.log(`   ✅ Response sent\n`);
+    console.log(`🔄 NOW SENDING VERIFICATION EMAIL IN BACKGROUND...\n`);
+
     sendVerificationEmail(user.email, verificationCode, user.username)
       .then(() => {
-        console.log(`✅ [REGISTER] Welcome email sent in background`);
+        console.log(
+          `✅ [REGISTER-BACKGROUND] Email task completed successfully\n`
+        );
       })
       .catch((emailError) => {
-        console.error(
-          `❌ [REGISTER] Background email failed:`,
-          emailError.message
-        );
-        // Email failed, but response already sent to client
+        console.log(`\n❌ [REGISTER-BACKGROUND] Email task failed!`);
+        console.log(`   Error: ${emailError.message}\n`);
       });
   } catch (error) {
     await session.abortTransaction();
@@ -318,7 +331,7 @@ router.post("/register", async (req, res) => {
   }
 });
 
-// ✅ VERIFY EMAIL ENDPOINT
+// ✅ VERIFY EMAIL
 router.post("/verify-email", async (req, res) => {
   try {
     const { email, code } = req.body;
@@ -369,13 +382,12 @@ router.post("/verify-email", async (req, res) => {
       });
     }
 
-    // ✅ Mark email as verified
     user.emailVerified = true;
     user.verificationCode = null;
     user.verificationCodeExpiresAt = null;
     await user.save();
 
-    console.log(`✅ Email verified for:`, user.email);
+    console.log(`✅ [VERIFY] Email verified for: ${user.email}`);
 
     res.status(200).json({
       success: true,
@@ -388,7 +400,7 @@ router.post("/verify-email", async (req, res) => {
       },
     });
   } catch (error) {
-    console.error(`❌ Email verification error:`, error.message);
+    console.error(`❌ [VERIFY] Error:`, error.message);
     res.status(500).json({
       success: false,
       message: error.message || "Email verification failed",
@@ -396,7 +408,7 @@ router.post("/verify-email", async (req, res) => {
   }
 });
 
-// ✅ RESEND VERIFICATION CODE ENDPOINT - OPTIMIZED WITH BACKGROUND EMAIL
+// ✅ RESEND VERIFICATION CODE
 router.post("/resend-verification", async (req, res) => {
   try {
     const { email } = req.body;
@@ -405,7 +417,6 @@ router.post("/resend-verification", async (req, res) => {
     console.log(`   Email: ${email}`);
 
     if (!email) {
-      console.warn(`⚠️ [RESEND] No email provided`);
       return res.status(400).json({
         success: false,
         message: "Email is required",
@@ -415,7 +426,7 @@ router.post("/resend-verification", async (req, res) => {
     const user = await User.findOne({ email: email.toLowerCase() });
 
     if (!user) {
-      console.warn(`⚠️ [RESEND] User not found: ${email}`);
+      console.warn(`   ⚠️ User not found`);
       return res.status(404).json({
         success: false,
         message: "User not found",
@@ -423,48 +434,45 @@ router.post("/resend-verification", async (req, res) => {
     }
 
     if (user.emailVerified) {
-      console.warn(`⚠️ [RESEND] Email already verified: ${email}`);
+      console.warn(`   ⚠️ Email already verified`);
       return res.status(400).json({
         success: false,
         message: "Email is already verified",
       });
     }
 
-    console.log(`🔐 [RESEND] Found user: ${user.username}`);
-
-    // Generate new code
     const verificationCode = generateVerificationCode();
     const verificationCodeExpiresAt = new Date(Date.now() + 10 * 60 * 1000);
 
-    console.log(`🔐 [RESEND] Generated new code: ${verificationCode}`);
+    console.log(`   Generated new code: ${verificationCode}`);
 
     user.verificationCode = verificationCode;
     user.verificationCodeExpiresAt = verificationCodeExpiresAt;
     await user.save();
 
-    console.log(`💾 [RESEND] Code saved to database`);
+    console.log(`   ✅ Code saved to DB`);
+    console.log(`   📤 Sending response to client...`);
 
-    // ✅ SEND RESPONSE IMMEDIATELY (don't wait for email)
     res.status(200).json({
       success: true,
       message: "Verification code resent to email",
     });
 
-    // ✅ SEND EMAIL IN BACKGROUND (fire and forget)
+    console.log(`   ✅ Response sent\n`);
+    console.log(`🔄 NOW SENDING VERIFICATION EMAIL IN BACKGROUND...\n`);
+
     sendVerificationEmail(user.email, verificationCode, user.username)
       .then(() => {
-        console.log(`✅ [RESEND] Verification email sent in background`);
+        console.log(
+          `✅ [RESEND-BACKGROUND] Email task completed successfully\n`
+        );
       })
       .catch((emailError) => {
-        console.error(
-          `❌ [RESEND] Background email failed:`,
-          emailError.message
-        );
-        // Email failed, but response already sent to client
+        console.log(`\n❌ [RESEND-BACKGROUND] Email task failed!`);
+        console.log(`   Error: ${emailError.message}\n`);
       });
   } catch (error) {
     console.error(`❌ [RESEND] Error:`, error.message);
-
     res.status(500).json({
       success: false,
       message: error.message || "Failed to resend verification code",
@@ -472,7 +480,7 @@ router.post("/resend-verification", async (req, res) => {
   }
 });
 
-// ✅ LOGIN ROUTE
+// ✅ LOGIN
 router.post("/login", async (req, res) => {
   try {
     const { email, password } = req.body;
@@ -506,7 +514,6 @@ router.post("/login", async (req, res) => {
     const account = await Account.findOne({ userId: user._id });
 
     if (!account) {
-      console.warn(`⚠️ Account missing for user ${user._id}, creating...`);
       const newAccount = new Account({
         userId: user._id,
         accountNumber: await generateAccountNumber(),
@@ -524,7 +531,7 @@ router.post("/login", async (req, res) => {
 
     const token = createToken(user._id);
 
-    console.log(`✅ User logged in:`, user.email);
+    console.log(`✅ [LOGIN] User logged in: ${user.email}`);
 
     res.status(200).json({
       success: true,
@@ -552,7 +559,7 @@ router.post("/login", async (req, res) => {
         : null,
     });
   } catch (error) {
-    console.error(`❌ Login error:`, error.message);
+    console.error(`❌ [LOGIN] Error:`, error.message);
     res.status(500).json({
       success: false,
       message: error.message || "Server error",
@@ -560,7 +567,7 @@ router.post("/login", async (req, res) => {
   }
 });
 
-// ✅ GET CURRENT USER ROUTE
+// ✅ GET CURRENT USER
 router.get("/me", protectRoute, async (req, res) => {
   try {
     const user = await User.findById(req.user._id);
@@ -590,7 +597,7 @@ router.get("/me", protectRoute, async (req, res) => {
         : null,
     });
   } catch (error) {
-    console.error(`❌ Get user error:`, error.message);
+    console.error(`❌ [GET-ME] Error:`, error.message);
     res.status(500).json({
       success: false,
       message: error.message || "Server error",
