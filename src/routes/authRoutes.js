@@ -1,4 +1,3 @@
-// =============== routes/authRoutes.js (WITH BREVO EMAIL & DEBUG) ===============
 import express from "express";
 import bcrypt from "bcryptjs";
 import User from "../models/user.js";
@@ -10,7 +9,7 @@ import nodemailer from "nodemailer";
 
 const router = express.Router();
 
-// ✅ Setup email transporter (BREVO)
+// ✅ Setup email transporter (BREVO) WITH POOL
 const transporter = nodemailer.createTransport({
   host: "smtp-relay.brevo.com",
   port: 587,
@@ -18,6 +17,14 @@ const transporter = nodemailer.createTransport({
   auth: {
     user: process.env.SMTP_USER,
     pass: process.env.SMTP_PASS,
+  },
+  connectionTimeout: 10000, // 10 seconds
+  socketTimeout: 15000, // 15 seconds
+  pool: {
+    maxConnections: 5,
+    maxMessages: 100,
+    rateDelta: 1000,
+    rateLimit: 10,
   },
 });
 
@@ -68,20 +75,12 @@ const validateEmail = (email) => {
   return regex.test(email);
 };
 
-// ✅ ENHANCED Send verification email WITH DEBUG
+// ✅ SEND VERIFICATION EMAIL WITH TIMEOUT & BACKGROUND TASK
 const sendVerificationEmail = async (email, code, username) => {
   try {
-    console.log("\n📧 [EMAIL] ═══════════════════════════════════");
-    console.log(`📧 [EMAIL] Starting email send`);
+    console.log("\n📧 [EMAIL] Starting email send");
     console.log(`   To: ${email}`);
     console.log(`   Code: ${code}`);
-    console.log(`   Username: ${username}`);
-    console.log(`   From: ${process.env.SENDER_EMAIL}`);
-    console.log(
-      `   Transporter Status: ${
-        transporter ? "✅ Ready" : "❌ Not initialized"
-      }`
-    );
 
     const mailOptions = {
       from: process.env.SENDER_EMAIL,
@@ -126,30 +125,27 @@ const sendVerificationEmail = async (email, code, username) => {
       `,
     };
 
-    console.log(`📤 [EMAIL] Sending mail with transporter.sendMail()...`);
-    const info = await transporter.sendMail(mailOptions);
+    // ✅ Send with timeout wrapper (20 seconds)
+    const emailPromise = transporter.sendMail(mailOptions);
+    const timeoutPromise = new Promise((_, reject) =>
+      setTimeout(() => reject(new Error("Email send timeout")), 20000)
+    );
+
+    const info = await Promise.race([emailPromise, timeoutPromise]);
 
     console.log(`✅ [EMAIL] Email sent successfully!`);
     console.log(`   Message ID: ${info.messageId}`);
-    console.log(`   Response: ${info.response}`);
     console.log(`   Accepted: ${JSON.stringify(info.accepted)}`);
-    console.log(`   Rejected: ${JSON.stringify(info.rejected)}`);
-    console.log(`📧 [EMAIL] ═══════════════════════════════════\n`);
 
     return true;
   } catch (error) {
-    console.error(`\n❌ [EMAIL] Email send FAILED!`);
-    console.error(`   Error Message: ${error.message}`);
-    console.error(`   Error Code: ${error.code}`);
-    console.error(`   Error Command: ${error.command}`);
-    console.error(`   Full Error:`, error);
-    console.error(`📧 [EMAIL] ═══════════════════════════════════\n`);
-
-    throw new Error(`Failed to send verification email: ${error.message}`);
+    console.error(`❌ [EMAIL] Email send FAILED!`);
+    console.error(`   Error: ${error.message}`);
+    throw error;
   }
 };
 
-// ✅ REGISTER ROUTE - WITH EMAIL VERIFICATION & DEBUG
+// ✅ REGISTER ROUTE - WITH BACKGROUND EMAIL
 router.post("/register", async (req, res) => {
   const session = await mongoose.startSession();
   session.startTransaction();
@@ -157,8 +153,7 @@ router.post("/register", async (req, res) => {
   try {
     const { username, email, password } = req.body;
 
-    console.log("\n🔐 [REGISTER] ═══════════════════════════════════");
-    console.log(`🔐 [REGISTER] New registration attempt`);
+    console.log("\n🔐 [REGISTER] New registration attempt");
     console.log(`   Username: ${username}`);
     console.log(`   Email: ${email}`);
 
@@ -171,7 +166,6 @@ router.post("/register", async (req, res) => {
       });
     }
 
-    // ✅ Validate username
     if (username.length < 3 || username.length > 30) {
       await session.abortTransaction();
       return res.status(400).json({
@@ -180,7 +174,6 @@ router.post("/register", async (req, res) => {
       });
     }
 
-    // ✅ Validate email format
     if (!validateEmail(email)) {
       await session.abortTransaction();
       return res.status(400).json({
@@ -189,7 +182,6 @@ router.post("/register", async (req, res) => {
       });
     }
 
-    // ✅ Validate password
     if (password.length < 6) {
       await session.abortTransaction();
       return res.status(400).json({
@@ -224,10 +216,7 @@ router.post("/register", async (req, res) => {
       });
     }
 
-    // ✅ Generate profile image
     const profileImage = `https://api.dicebear.com/6.x/initials/svg?seed=${username}`;
-
-    // ✅ Generate verification code
     const verificationCode = generateVerificationCode();
     const verificationCodeExpiresAt = new Date(Date.now() + 10 * 60 * 1000);
 
@@ -262,31 +251,17 @@ router.post("/register", async (req, res) => {
     });
 
     await account.save({ session });
-    console.log(
-      `✅ [REGISTER] Basic account created: ${account.accountNumber}`
-    );
+    console.log(`✅ [REGISTER] Account created: ${account.accountNumber}`);
 
-    // ✅ Update user with accountId reference
     user.accountId = account._id;
     await user.save({ session });
 
     await session.commitTransaction();
     console.log(`✅ [REGISTER] Transaction committed`);
 
-    // ✅ Send verification email - WITH DEBUG
-    console.log(`\n📧 [REGISTER] About to send verification email...`);
-    try {
-      await sendVerificationEmail(user.email, verificationCode, user.username);
-      console.log(`✅ [REGISTER] Verification email sent successfully`);
-    } catch (emailError) {
-      console.error(`❌ [REGISTER] Email send failed:`, emailError.message);
-      console.warn(`⚠️ [REGISTER] User registered but email could not be sent`);
-    }
-
     const token = createToken(user._id);
 
-    console.log(`🔐 [REGISTER] ═══════════════════════════════════\n`);
-
+    // ✅ SEND RESPONSE IMMEDIATELY (don't wait for email)
     res.status(201).json({
       success: true,
       message: "User registered successfully. Check your email to verify.",
@@ -310,10 +285,22 @@ router.post("/register", async (req, res) => {
         requiresSetup: true,
       },
     });
+
+    // ✅ SEND EMAIL IN BACKGROUND (fire and forget)
+    sendVerificationEmail(user.email, verificationCode, user.username)
+      .then(() => {
+        console.log(`✅ [REGISTER] Welcome email sent in background`);
+      })
+      .catch((emailError) => {
+        console.error(
+          `❌ [REGISTER] Background email failed:`,
+          emailError.message
+        );
+        // Email failed, but response already sent to client
+      });
   } catch (error) {
     await session.abortTransaction();
     console.error(`❌ [REGISTER] Registration error:`, error.message);
-    console.error(`🔐 [REGISTER] ═══════════════════════════════════\n`);
 
     if (error.code === 11000) {
       return res.status(409).json({
@@ -409,13 +396,12 @@ router.post("/verify-email", async (req, res) => {
   }
 });
 
-// ✅ RESEND VERIFICATION CODE ENDPOINT - WITH DEBUG
+// ✅ RESEND VERIFICATION CODE ENDPOINT - OPTIMIZED WITH BACKGROUND EMAIL
 router.post("/resend-verification", async (req, res) => {
   try {
     const { email } = req.body;
 
-    console.log("\n🔄 [RESEND] ═══════════════════════════════════");
-    console.log(`🔄 [RESEND] Resend verification request`);
+    console.log("\n🔄 [RESEND] Resend verification request");
     console.log(`   Email: ${email}`);
 
     if (!email) {
@@ -458,25 +444,26 @@ router.post("/resend-verification", async (req, res) => {
 
     console.log(`💾 [RESEND] Code saved to database`);
 
-    // Send email - WITH DEBUG
-    console.log(`📧 [RESEND] About to send verification email...`);
-    try {
-      await sendVerificationEmail(user.email, verificationCode, user.username);
-      console.log(`✅ [RESEND] Verification email sent successfully`);
-    } catch (emailError) {
-      console.error(`❌ [RESEND] Email send failed:`, emailError.message);
-      console.error(`   Continuing anyway...`);
-    }
-
-    console.log(`🔄 [RESEND] ═══════════════════════════════════\n`);
-
+    // ✅ SEND RESPONSE IMMEDIATELY (don't wait for email)
     res.status(200).json({
       success: true,
       message: "Verification code resent to email",
     });
+
+    // ✅ SEND EMAIL IN BACKGROUND (fire and forget)
+    sendVerificationEmail(user.email, verificationCode, user.username)
+      .then(() => {
+        console.log(`✅ [RESEND] Verification email sent in background`);
+      })
+      .catch((emailError) => {
+        console.error(
+          `❌ [RESEND] Background email failed:`,
+          emailError.message
+        );
+        // Email failed, but response already sent to client
+      });
   } catch (error) {
     console.error(`❌ [RESEND] Error:`, error.message);
-    console.error(`🔄 [RESEND] ═══════════════════════════════════\n`);
 
     res.status(500).json({
       success: false,

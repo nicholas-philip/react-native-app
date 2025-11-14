@@ -21,6 +21,27 @@ app.use(helmet());
 app.use(express.json({ limit: "10mb" }));
 app.use(express.urlencoded({ limit: "10mb", extended: true }));
 
+// ✅ SET LONGER TIMEOUT FOR API REQUESTS (before routes)
+app.use((req, res, next) => {
+  // Increase timeout from default 120s to 60s for most requests
+  req.setTimeout(60000); // 60 seconds
+  res.setTimeout(60000);
+  next();
+});
+
+// ✅ SET LONGER TIMEOUT FOR SPECIFIC SLOW ROUTES
+app.post("/api/auth/resend-verification", (req, res, next) => {
+  req.setTimeout(90000); // 90 seconds for email operations
+  res.setTimeout(90000);
+  next();
+});
+
+app.post("/api/auth/register", (req, res, next) => {
+  req.setTimeout(90000); // 90 seconds for email operations
+  res.setTimeout(90000);
+  next();
+});
+
 // ✅ ADD REQUEST ID TO ALL REQUESTS
 app.use((req, res, next) => {
   req.id = crypto.randomUUID();
@@ -33,8 +54,8 @@ const globalLimiter = rateLimit({
   windowMs: 15 * 60 * 1000, // 15 minutes
   max: 100, // Limit each IP to 100 requests per windowMs
   message: "Too many requests from this IP, please try again later.",
-  standardHeaders: true, // Return rate limit info in the `RateLimit-*` headers
-  legacyHeaders: false, // Disable the `X-RateLimit-*` headers
+  standardHeaders: true,
+  legacyHeaders: false,
   skip: (req) => {
     // Skip rate limiting for health check
     return req.path === "/api/health";
@@ -48,7 +69,7 @@ const authLimiter = rateLimit({
   windowMs: 15 * 60 * 1000, // 15 minutes
   max: 5, // Limit each IP to 5 login attempts per 15 minutes
   message: "Too many login attempts, please try again later.",
-  skipSuccessfulRequests: true, // Don't count successful requests
+  skipSuccessfulRequests: true,
 });
 
 // ✅ STRICTER RATE LIMITING FOR PAYMENTS
@@ -71,7 +92,6 @@ app.use((req, res, next) => {
 });
 
 // ✅ TRUST PROXY (for accurate IP logging behind load balancer)
-// Set to specific number of proxies (1 for most cases) or a function
 if (process.env.NODE_ENV === "production") {
   app.set("trust proxy", 1); // Trust first proxy (Render/Heroku)
 }
@@ -214,6 +234,7 @@ const startServer = async () => {
         `📍 Server URL: ${process.env.API_URL || `http://localhost:${PORT}`}`
       );
       console.log(`🔐 Security: Rate limiting and validation enabled`);
+      console.log(`⏱️ Timeout: 60s (90s for email operations)`);
 
       // Start cron job after server is ready
       if (process.env.NODE_ENV === "production") {
