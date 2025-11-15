@@ -1,14 +1,15 @@
-// ================== routes/authTransactions.js (COMPLETE) ==================
+// =============== routes/authTransactions.js (PAYSTACK TRANSFER) ===============
 import express from "express";
 import mongoose from "mongoose";
 import Transaction from "../models/Transaction.js";
 import Account from "../models/Account.js";
+import Payment from "../models/Payment.js";
 import authMiddleware from "../middleware/auth.js";
-import { generateReference } from "../utils/helpers.js";
+import { generateReference, validateAmount } from "../utils/helpers.js";
 
 const router = express.Router();
 
-// Get transaction history with pagination
+// ✅ Get transaction history with pagination
 router.get("/history", authMiddleware, async (req, res) => {
   try {
     const account = await Account.findOne({ userId: req.user.id });
@@ -47,7 +48,7 @@ router.get("/history", authMiddleware, async (req, res) => {
   }
 });
 
-// Get single transaction by ID
+// ✅ Get single transaction by ID
 router.get("/:id", authMiddleware, async (req, res) => {
   try {
     const account = await Account.findOne({ userId: req.user.id });
@@ -75,7 +76,7 @@ router.get("/:id", authMiddleware, async (req, res) => {
   }
 });
 
-// ✅ DEPOSIT money
+// ✅ DEPOSIT money (Direct - no Paystack)
 router.post("/deposit", authMiddleware, async (req, res) => {
   const session = await mongoose.startSession();
   session.startTransaction();
@@ -83,8 +84,9 @@ router.post("/deposit", authMiddleware, async (req, res) => {
   try {
     const { amount, description } = req.body;
 
-    if (!amount || amount <= 0) {
-      throw new Error("Invalid amount");
+    const validatedAmount = validateAmount(amount);
+    if (!validatedAmount.valid) {
+      throw new Error(validatedAmount.error);
     }
 
     const account = await Account.findOne({ userId: req.user.id }).session(
@@ -99,13 +101,13 @@ router.post("/deposit", authMiddleware, async (req, res) => {
     }
 
     const balanceBefore = account.balance;
-    account.balance += amount;
+    account.balance += validatedAmount.amount;
     const balanceAfter = account.balance;
 
     const transaction = new Transaction({
       accountId: account._id,
       type: "deposit",
-      amount,
+      amount: validatedAmount.amount,
       currency: account.currency,
       status: "completed",
       description: description || "Deposit",
@@ -144,8 +146,9 @@ router.post("/withdraw", authMiddleware, async (req, res) => {
   try {
     const { amount, description } = req.body;
 
-    if (!amount || amount <= 0) {
-      throw new Error("Invalid amount");
+    const validatedAmount = validateAmount(amount);
+    if (!validatedAmount.valid) {
+      throw new Error(validatedAmount.error);
     }
 
     const account = await Account.findOne({ userId: req.user.id }).session(
@@ -159,18 +162,18 @@ router.post("/withdraw", authMiddleware, async (req, res) => {
       throw new Error("Account is not active");
     }
 
-    if (account.balance < amount) {
+    if (account.balance < validatedAmount.amount) {
       throw new Error("Insufficient funds");
     }
 
     const balanceBefore = account.balance;
-    account.balance -= amount;
+    account.balance -= validatedAmount.amount;
     const balanceAfter = account.balance;
 
     const transaction = new Transaction({
       accountId: account._id,
       type: "withdrawal",
-      amount,
+      amount: validatedAmount.amount,
       currency: account.currency,
       status: "completed",
       description: description || "Withdrawal",
@@ -201,25 +204,33 @@ router.post("/withdraw", authMiddleware, async (req, res) => {
   }
 });
 
-// ✅ TRANSFER money to another account
+// ✅ TRANSFER money to another account (PAYSTACK VERIFIED)
 router.post("/transfer", authMiddleware, async (req, res) => {
   const session = await mongoose.startSession();
   session.startTransaction();
 
   try {
-    const { recipientAccountNumber, amount, description } = req.body;
+    const { reference, recipientAccountNumber, amount, description } = req.body;
 
-    if (!amount || amount <= 0) {
-      throw new Error("Invalid amount");
+    console.log(`[${req.id}] 🔄 Processing transfer with Paystack reference`);
+
+    const validatedAmount = validateAmount(amount);
+    if (!validatedAmount.valid) {
+      throw new Error(validatedAmount.error);
     }
 
     if (!recipientAccountNumber) {
       throw new Error("Recipient account number is required");
     }
 
+    if (!reference) {
+      throw new Error("Paystack reference is required");
+    }
+
     const senderAccount = await Account.findOne({
       userId: req.user.id,
     }).session(session);
+
     if (!senderAccount) {
       throw new Error("Sender account not found");
     }
@@ -244,39 +255,84 @@ router.post("/transfer", authMiddleware, async (req, res) => {
       throw new Error("Cannot transfer to same account");
     }
 
-    if (senderAccount.balance < amount) {
+    if (senderAccount.balance < validatedAmount.amount) {
       throw new Error("Insufficient funds");
     }
 
-    const transferRef = generateReference("transfer");
+    // Check for existing transfer (idempotency)
+    const existingTransfer = await Transaction.findOne({
+      reference,
+      type: "transfer_out",
+    }).session(session);
 
-    // Debit sender
+    if (existingTransfer) {
+      await session.commitTransaction();
+      return res.status(201).json({
+        success: true,
+        message: "Transfer already completed",
+        transaction: existingTransfer,
+        newBalance: senderAccount.balance,
+      });
+    }
+
+    const transferRef = reference || generateReference("transfer");
+
+    // ✅ Debit sender
     const senderBalanceBefore = senderAccount.balance;
-    senderAccount.balance -= amount;
+    senderAccount.balance -= validatedAmount.amount;
     const senderBalanceAfter = senderAccount.balance;
+
+    console.log(
+      `[${req.id}] 💸 Sender balance: ${senderBalanceBefore} → ${senderBalanceAfter}`
+    );
 
     const senderTransaction = new Transaction({
       accountId: senderAccount._id,
       type: "transfer_out",
-      amount,
+      amount: validatedAmount.amount,
       currency: senderAccount.currency,
       status: "completed",
       description: description || `Transfer to ${recipientAccountNumber}`,
       balanceBefore: senderBalanceBefore,
       balanceAfter: senderBalanceAfter,
       reference: transferRef,
+      metadata: {
+        recipientAccountNumber,
+        paystackReference: reference,
+        ipAddress: req.ip,
+        userAgent: req.get("user-agent"),
+      },
       completedAt: new Date(),
     });
 
-    // Credit recipient
+    // ✅ Create payment record for sender
+    const senderPayment = new Payment({
+      accountId: senderAccount._id,
+      paymentMethod: "transfer",
+      amount: validatedAmount.amount,
+      currency: senderAccount.currency,
+      status: "completed",
+      recipient: {
+        accountNumber: recipientAccountNumber,
+      },
+      paymentReference: transferRef,
+      transactionId: senderTransaction._id,
+      processedAt: new Date(),
+    });
+
+    // ✅ Credit recipient
     const recipientBalanceBefore = recipientAccount.balance;
-    recipientAccount.balance += amount;
+    recipientAccount.balance += validatedAmount.amount;
     const recipientBalanceAfter = recipientAccount.balance;
+
+    console.log(
+      `[${req.id}] 💳 Recipient balance: ${recipientBalanceBefore} → ${recipientBalanceAfter}`
+    );
 
     const recipientTransaction = new Transaction({
       accountId: recipientAccount._id,
       type: "transfer_in",
-      amount,
+      amount: validatedAmount.amount,
       currency: recipientAccount.currency,
       status: "completed",
       description:
@@ -284,15 +340,41 @@ router.post("/transfer", authMiddleware, async (req, res) => {
       balanceBefore: recipientBalanceBefore,
       balanceAfter: recipientBalanceAfter,
       reference: transferRef,
+      metadata: {
+        senderAccountNumber: senderAccount.accountNumber,
+        paystackReference: reference,
+        ipAddress: req.ip,
+        userAgent: req.get("user-agent"),
+      },
       completedAt: new Date(),
+    });
+
+    // ✅ Create payment record for recipient
+    const recipientPayment = new Payment({
+      accountId: recipientAccount._id,
+      paymentMethod: "transfer",
+      amount: validatedAmount.amount,
+      currency: recipientAccount.currency,
+      status: "completed",
+      recipient: {
+        accountNumber: senderAccount.accountNumber,
+      },
+      paymentReference: transferRef,
+      transactionId: recipientTransaction._id,
+      processedAt: new Date(),
     });
 
     await senderAccount.save({ session });
     await recipientAccount.save({ session });
     await senderTransaction.save({ session });
     await recipientTransaction.save({ session });
+    await senderPayment.save({ session });
+    await recipientPayment.save({ session });
 
     await session.commitTransaction();
+
+    console.log(`[${req.id}] ✅ Transfer completed successfully`);
+
     res.status(201).json({
       success: true,
       message: "Transfer completed successfully",
@@ -300,11 +382,12 @@ router.post("/transfer", authMiddleware, async (req, res) => {
       newBalance: senderAccount.balance,
       recipient: {
         accountNumber: recipientAccount.accountNumber,
-        received: amount,
+        received: validatedAmount.amount,
       },
     });
   } catch (err) {
     await session.abortTransaction();
+    console.error(`[${req.id}] ❌ Transfer error:`, err.message);
     res.status(400).json({
       success: false,
       message: err.message,
@@ -313,6 +396,5 @@ router.post("/transfer", authMiddleware, async (req, res) => {
     session.endSession();
   }
 });
-
 
 export default router;

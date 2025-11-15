@@ -1,4 +1,4 @@
-// =============== routes/authPayment.js (COMPLETE - NO ENCRYPTION) ===============
+// =============== routes/authPayment.js (PAYSTACK UNIFIED) ===============
 import express from "express";
 import axios from "axios";
 import Payment from "../models/Payment.js";
@@ -25,302 +25,24 @@ const verifyPaystackSignature = (req) => {
   return hash === req.headers["x-paystack-signature"];
 };
 
-// ✅ UNIFIED: Initiate Payment (Wallet, Card, Transfer only - Deposits handled separately)
-router.post("/initiate", authMiddleware, async (req, res) => {
-  const session = await mongoose.startSession();
-  session.startTransaction();
-
+// ✅ PAYSTACK: Initialize Payment/Transfer (Card, Wallet, Mobile Money)
+router.post("/paystack/initialize", authMiddleware, async (req, res) => {
   try {
     const {
       amount,
-      paymentMethod, // "wallet", "card", "transfer"
+      email,
       phoneNumber,
-      network, // "MTN", "VODAFONE", "TIGO"
-      recipient, // For transfers to other users
-      description,
-      idempotencyKey, // For idempotency
-    } = req.body;
-
-    console.log(`[${req.id}] 💳 Payment initiate request:`, {
-      amount,
+      network,
       paymentMethod,
-      recipient: recipient?.name,
-    });
-
-    // ✅ INPUT VALIDATION
-    if (!amount) {
-      throw new Error("Amount is required");
-    }
-
-    const validatedAmount = validateAmount(amount);
-    if (!validatedAmount.valid) {
-      throw new Error(validatedAmount.error);
-    }
-
-    if (!paymentMethod) {
-      throw new Error("Payment method is required");
-    }
-
-    if (!["wallet", "card", "transfer"].includes(paymentMethod)) {
-      throw new Error("Invalid payment method");
-    }
-
-    // ✅ IDEMPOTENCY CHECK
-    if (idempotencyKey) {
-      const existingPayment = await Payment.findOne({ idempotencyKey }).session(
-        session
-      );
-      if (existingPayment) {
-        console.log(
-          `[${req.id}] ℹ️ Idempotent request - returning existing payment`
-        );
-        await session.commitTransaction();
-        return res.status(201).json({
-          success: true,
-          message: "Idempotent request - returning existing payment",
-          payment: existingPayment,
-        });
-      }
-    }
-
-    const account = await Account.findOne({ userId: req.user.id }).session(
-      session
-    );
-    if (!account) {
-      throw new Error("Account not found");
-    }
-
-    console.log(`[${req.id}] 📊 Account status:`, account.status);
-
-    if (account.status !== "active") {
-      throw new Error(`Account is ${account.status}. Cannot process payments.`);
-    }
-
-    // Check balance for payments
-    if (account.balance < validatedAmount.amount) {
-      throw new Error(
-        `Insufficient funds. Balance: ₵${account.balance}, Required: ₵${validatedAmount.amount}`
-      );
-    }
-
-    const paymentReference = generateReference("payment");
-    console.log(`[${req.id}] 📝 Generated reference:`, paymentReference);
-
-    // ✅ WALLET OR CARD PAYMENT (Pay bills)
-    if (paymentMethod === "wallet" || paymentMethod === "card") {
-      console.log(`[${req.id}] 💰 Processing ${paymentMethod} payment`);
-
-      if (!recipient || !recipient.name) {
-        throw new Error("Recipient name is required");
-      }
-
-      // Validate description
-      if (description && description.length > 500) {
-        throw new Error("Description too long (max 500 characters)");
-      }
-
-      // ✅ Debit sender
-      const balanceBefore = account.balance;
-      account.balance -= validatedAmount.amount;
-      const balanceAfter = account.balance;
-
-      console.log(
-        `[${req.id}] 💸 Balance change: ${balanceBefore} → ${balanceAfter}`
-      );
-
-      const payment = new Payment({
-        accountId: account._id,
-        paymentMethod: paymentMethod,
-        amount: validatedAmount.amount,
-        currency: account.currency,
-        status: "completed",
-        recipient: {
-          name: recipient.name,
-        },
-        paymentReference,
-        idempotencyKey: idempotencyKey || null,
-        processedAt: new Date(),
-      });
-
-      const transaction = new Transaction({
-        accountId: account._id,
-        type: "payment",
-        amount: validatedAmount.amount,
-        currency: account.currency,
-        status: "completed",
-        description: description || `Payment to ${recipient.name}`,
-        balanceBefore,
-        balanceAfter,
-        reference: paymentReference,
-        metadata: {
-          method: paymentMethod,
-          ipAddress: req.ip,
-          userAgent: req.get("user-agent"),
-        },
-        completedAt: new Date(),
-      });
-
-      payment.transactionId = transaction._id;
-
-      await account.save({ session });
-      await transaction.save({ session });
-      await payment.save({ session });
-
-      await session.commitTransaction();
-
-      console.log(`[${req.id}] ✅ Payment completed successfully`);
-
-      return res.status(201).json({
-        success: true,
-        message: "Payment completed successfully",
-        payment,
-        newBalance: account.balance,
-      });
-    }
-
-    // ✅ TRANSFER TO ANOTHER USER
-    if (paymentMethod === "transfer") {
-      console.log(`[${req.id}] 🔄 Processing transfer`);
-
-      if (!recipient || !recipient.accountNumber) {
-        throw new Error("Recipient account number is required");
-      }
-
-      const recipientAccount = await Account.findOne({
-        accountNumber: recipient.accountNumber,
-      }).session(session);
-
-      if (!recipientAccount) {
-        throw new Error("Recipient account not found");
-      }
-
-      console.log(
-        `[${req.id}] 📋 Recipient account:`,
-        recipientAccount.accountNumber
-      );
-
-      if (recipientAccount.status !== "active") {
-        throw new Error("Recipient account is not active");
-      }
-
-      if (account.accountNumber === recipient.accountNumber) {
-        throw new Error("Cannot transfer to same account");
-      }
-
-      // ✅ Debit sender
-      const senderBalanceBefore = account.balance;
-      account.balance -= validatedAmount.amount;
-      const senderBalanceAfter = account.balance;
-
-      console.log(
-        `[${req.id}] 💸 Sender balance: ${senderBalanceBefore} → ${senderBalanceAfter}`
-      );
-
-      const senderPayment = new Payment({
-        accountId: account._id,
-        paymentMethod: "transfer",
-        amount: validatedAmount.amount,
-        currency: account.currency,
-        status: "completed",
-        recipient: {
-          name: recipient.name || "Transfer",
-          accountNumber: recipient.accountNumber,
-        },
-        paymentReference,
-        idempotencyKey: idempotencyKey || null,
-      });
-
-      const senderTransaction = new Transaction({
-        accountId: account._id,
-        type: "transfer_out",
-        amount: validatedAmount.amount,
-        currency: account.currency,
-        status: "completed",
-        description: description || `Transfer to ${recipient.accountNumber}`,
-        balanceBefore: senderBalanceBefore,
-        balanceAfter: senderBalanceAfter,
-        reference: paymentReference,
-        metadata: {
-          recipientAccountNumber: recipient.accountNumber,
-          ipAddress: req.ip,
-          userAgent: req.get("user-agent"),
-        },
-        completedAt: new Date(),
-      });
-
-      senderPayment.transactionId = senderTransaction._id;
-
-      // ✅ Credit recipient
-      const recipientBalanceBefore = recipientAccount.balance;
-      recipientAccount.balance += validatedAmount.amount;
-      const recipientBalanceAfter = recipientAccount.balance;
-
-      console.log(
-        `[${req.id}] 💳 Recipient balance: ${recipientBalanceBefore} → ${recipientBalanceAfter}`
-      );
-
-      const recipientTransaction = new Transaction({
-        accountId: recipientAccount._id,
-        type: "transfer_in",
-        amount: validatedAmount.amount,
-        currency: recipientAccount.currency,
-        status: "completed",
-        description: description || `Transfer from ${account.accountNumber}`,
-        balanceBefore: recipientBalanceBefore,
-        balanceAfter: recipientBalanceAfter,
-        reference: paymentReference,
-        metadata: {
-          senderAccountNumber: account.accountNumber,
-          ipAddress: req.ip,
-          userAgent: req.get("user-agent"),
-        },
-        completedAt: new Date(),
-      });
-
-      await account.save({ session });
-      await recipientAccount.save({ session });
-      await senderTransaction.save({ session });
-      await recipientTransaction.save({ session });
-      await senderPayment.save({ session });
-
-      await session.commitTransaction();
-
-      console.log(`[${req.id}] ✅ Transfer completed successfully`);
-
-      return res.status(201).json({
-        success: true,
-        message: "Transfer completed successfully",
-        payment: senderPayment,
-        newBalance: account.balance,
-        recipient: {
-          accountNumber: recipientAccount.accountNumber,
-          received: validatedAmount.amount,
-        },
-      });
-    }
-
-    throw new Error("Invalid payment method");
-  } catch (err) {
-    await session.abortTransaction();
-    console.error(`[${req.id}] ❌ Payment error:`, err.message);
-    res.status(400).json({
-      success: false,
-      message: err.message,
-    });
-  } finally {
-    session.endSession();
-  }
-});
-
-// ✅ PAYSTACK: Initialize Mobile Money Payment
-router.post("/paystack/initialize", authMiddleware, async (req, res) => {
-  try {
-    const { amount, email, phoneNumber, network } = req.body;
+      recipientAccountNumber,
+      recipient,
+      description,
+    } = req.body;
 
     console.log(`[${req.id}] 📱 Paystack initialization request:`, {
       amount,
+      paymentMethod,
       network,
-      phoneNumber: phoneNumber?.substring(0, 6) + "****",
     });
 
     // ✅ INPUT VALIDATION
@@ -332,19 +54,29 @@ router.post("/paystack/initialize", authMiddleware, async (req, res) => {
       });
     }
 
-    if (!["MTN", "VODAFONE", "TIGO"].includes(network)) {
-      return res.status(400).json({
-        success: false,
-        message: "Invalid network. Must be MTN, VODAFONE, or TIGO",
-      });
-    }
+    // Only validate network for mobile money payments
+    if (paymentMethod === "mobile_money") {
+      if (!network || !["MTN", "VODAFONE", "TIGO"].includes(network)) {
+        return res.status(400).json({
+          success: false,
+          message: "Invalid network. Must be MTN, VODAFONE, or TIGO",
+        });
+      }
 
-    const phoneValidation = validatePhoneNumber(phoneNumber);
-    if (!phoneValidation.valid) {
-      return res.status(400).json({
-        success: false,
-        message: phoneValidation.error,
-      });
+      if (!phoneNumber) {
+        return res.status(400).json({
+          success: false,
+          message: "Phone number is required for mobile money",
+        });
+      }
+
+      const phoneValidation = validatePhoneNumber(phoneNumber);
+      if (!phoneValidation.valid) {
+        return res.status(400).json({
+          success: false,
+          message: phoneValidation.error,
+        });
+      }
     }
 
     const account = await Account.findOne({ userId: req.user.id });
@@ -357,18 +89,35 @@ router.post("/paystack/initialize", authMiddleware, async (req, res) => {
 
     console.log(`[${req.id}] 📊 Account found:`, account.accountNumber);
 
+    const metadata = {
+      userId: req.user.id,
+      accountNumber: account.accountNumber,
+      paymentMethod,
+      description,
+    };
+
+    // Only add mobile money specific metadata
+    if (paymentMethod === "mobile_money") {
+      metadata.network = network;
+      metadata.phoneNumber = phoneNumber; // ✅ Plain text - NO encryption
+    }
+
+    // Only add transfer specific metadata
+    if (paymentMethod === "transfer" || recipientAccountNumber) {
+      metadata.recipientAccountNumber = recipientAccountNumber;
+    }
+
+    if (recipient) {
+      metadata.recipientName = recipient.name;
+    }
+
     // Call Paystack to initialize transaction
     const paystackResponse = await axios.post(
       "https://api.paystack.co/transaction/initialize",
       {
         email: email || req.user.email,
         amount: validatedAmount.amount * 100, // Paystack uses cents
-        metadata: {
-          userId: req.user.id,
-          accountNumber: account.accountNumber,
-          network,
-          phoneNumber: phoneValidation.phoneNumber, // ✅ Plain text - NO encryption
-        },
+        metadata,
       },
       {
         headers: {
@@ -397,7 +146,7 @@ router.post("/paystack/initialize", authMiddleware, async (req, res) => {
   }
 });
 
-// ✅ PAYSTACK: Verify & Complete Deposit
+// ✅ PAYSTACK: Verify & Complete Payment/Transfer
 router.post("/paystack/verify/:reference", authMiddleware, async (req, res) => {
   const session = await mongoose.startSession();
   session.startTransaction();
@@ -430,6 +179,7 @@ router.post("/paystack/verify/:reference", authMiddleware, async (req, res) => {
 
     const paystackData = paystackResponse.data.data;
     const amount = paystackData.amount / 100; // Convert from cents
+    const paymentMethod = paystackData.metadata.paymentMethod;
 
     const account = await Account.findOne({ userId: req.user.id }).session(
       session
@@ -438,81 +188,143 @@ router.post("/paystack/verify/:reference", authMiddleware, async (req, res) => {
       throw new Error("Account not found");
     }
 
-    // Check if deposit already processed (idempotency)
+    // Check if payment already processed (idempotency)
     const existingPayment = await Payment.findOne({
       paymentReference: reference,
     }).session(session);
+
     if (existingPayment && existingPayment.status === "completed") {
       await session.commitTransaction();
       return res.status(201).json({
         success: true,
-        message: "Deposit already processed",
+        message: "Payment already processed",
         payment: existingPayment,
         newBalance: account.balance,
       });
     }
 
-    // ✅ Create payment record - NO ENCRYPTION
-    const payment = new Payment({
-      accountId: account._id,
-      paymentMethod: "mobile_money",
-      amount,
-      currency: account.currency,
-      status: "completed",
-      recipient: {
-        name: "Mobile Money Deposit",
-        phone: paystackData.metadata.phoneNumber, // ✅ Plain text - NO encryption
-        network: paystackData.metadata.network,
-      },
-      paymentReference: reference,
-      processedAt: new Date(),
-    });
+    // ✅ HANDLE PAYMENT TO RECIPIENT (Bill Payment)
+    if (paymentMethod === "card" || paymentMethod === "wallet") {
+      console.log(`[${req.id}] 💰 Processing bill payment`);
 
-    // ✅ Create transaction record (CREDIT)
-    const balanceBefore = account.balance;
-    account.balance += amount;
-    const balanceAfter = account.balance;
+      const payment = new Payment({
+        accountId: account._id,
+        paymentMethod,
+        amount,
+        currency: account.currency,
+        status: "completed",
+        recipient: {
+          name: paystackData.metadata.recipientName,
+        },
+        paymentReference: reference,
+        processedAt: new Date(),
+      });
 
-    console.log(
-      `[${req.id}] 💳 Balance updated: ${balanceBefore} → ${balanceAfter}`
-    );
+      const balanceBefore = account.balance;
+      account.balance -= amount;
+      const balanceAfter = account.balance;
 
-    const transaction = new Transaction({
-      accountId: account._id,
-      type: "deposit",
-      amount,
-      currency: account.currency,
-      status: "completed",
-      description: `Mobile money deposit via ${paystackData.metadata.network}`,
-      balanceBefore,
-      balanceAfter,
-      reference,
-      metadata: {
-        paystackReference: paystackData.reference,
-        network: paystackData.metadata.network,
-        phoneNumber: paystackData.metadata.phoneNumber, // ✅ Plain text
-        ipAddress: req.ip,
-        userAgent: req.get("user-agent"),
-      },
-      completedAt: new Date(),
-    });
+      const transaction = new Transaction({
+        accountId: account._id,
+        type: "payment",
+        amount,
+        currency: account.currency,
+        status: "completed",
+        description:
+          paystackData.metadata.description ||
+          `Payment to ${paystackData.metadata.recipientName}`,
+        balanceBefore,
+        balanceAfter,
+        reference,
+        metadata: {
+          method: paymentMethod,
+          paystackReference: paystackData.reference,
+          ipAddress: req.ip,
+          userAgent: req.get("user-agent"),
+        },
+        completedAt: new Date(),
+      });
 
-    payment.transactionId = transaction._id;
+      payment.transactionId = transaction._id;
 
-    await account.save({ session });
-    await transaction.save({ session });
-    await payment.save({ session });
+      await account.save({ session });
+      await transaction.save({ session });
+      await payment.save({ session });
 
-    await session.commitTransaction();
+      await session.commitTransaction();
 
-    console.log(`[${req.id}] ✅ Deposit completed successfully`);
+      console.log(`[${req.id}] ✅ Bill payment completed successfully`);
 
-    return res.status(201).json({
-      success: true,
-      message: "Deposit completed successfully",
-      payment,
-      newBalance: account.balance,
-    });
+      return res.status(201).json({
+        success: true,
+        message: "Payment completed successfully",
+        payment,
+        newBalance: account.balance,
+      });
+    }
+
+    // ✅ HANDLE MOBILE MONEY DEPOSIT
+    if (paymentMethod === "mobile_money") {
+      console.log(`[${req.id}] 📱 Processing mobile money deposit`);
+
+      const payment = new Payment({
+        accountId: account._id,
+        paymentMethod: "mobile_money",
+        amount,
+        currency: account.currency,
+        status: "completed",
+        recipient: {
+          name: "Mobile Money Deposit",
+          phone: paystackData.metadata.phoneNumber,
+          network: paystackData.metadata.network,
+        },
+        paymentReference: reference,
+        processedAt: new Date(),
+      });
+
+      const balanceBefore = account.balance;
+      account.balance += amount;
+      const balanceAfter = account.balance;
+
+      const transaction = new Transaction({
+        accountId: account._id,
+        type: "deposit",
+        amount,
+        currency: account.currency,
+        status: "completed",
+        description: `Mobile money deposit via ${paystackData.metadata.network}`,
+        balanceBefore,
+        balanceAfter,
+        reference,
+        metadata: {
+          paystackReference: paystackData.reference,
+          network: paystackData.metadata.network,
+          phoneNumber: paystackData.metadata.phoneNumber,
+          ipAddress: req.ip,
+          userAgent: req.get("user-agent"),
+        },
+        completedAt: new Date(),
+      });
+
+      payment.transactionId = transaction._id;
+
+      await account.save({ session });
+      await transaction.save({ session });
+      await payment.save({ session });
+
+      await session.commitTransaction();
+
+      console.log(`[${req.id}] ✅ Mobile money deposit completed successfully`);
+
+      return res.status(201).json({
+        success: true,
+        message: "Deposit completed successfully",
+        payment,
+        newBalance: account.balance,
+      });
+    }
+
+    throw new Error("Invalid payment method");
   } catch (err) {
     await session.abortTransaction();
     console.error(`[${req.id}] ❌ Paystack verification error:`, err.message);
@@ -540,9 +352,9 @@ router.post("/paystack/webhook", express.json(), (req, res) => {
     const event = req.body;
     console.log("[WEBHOOK] ✅ Paystack webhook received:", event.event);
 
-    // You can process webhook events here
     if (event.event === "charge.success") {
       console.log("[WEBHOOK] 💰 Payment successful:", event.data.reference);
+      // Additional webhook processing can be added here
     }
 
     res.json({ success: true });
@@ -558,11 +370,7 @@ router.post("/paystack/webhook", express.json(), (req, res) => {
 // ✅ Get payment history with pagination
 router.get("/history", authMiddleware, async (req, res) => {
   try {
-    console.log(`[${req.id}] 📜 Payment history request`, {
-      page: req.query.page,
-      limit: req.query.limit,
-      status: req.query.status,
-    });
+    console.log(`[${req.id}] 📜 Payment history request`);
 
     const account = await Account.findOne({ userId: req.user.id });
     if (!account) {
@@ -572,7 +380,6 @@ router.get("/history", authMiddleware, async (req, res) => {
       });
     }
 
-    // ✅ VALIDATE PAGINATION
     const limit = Math.min(parseInt(req.query.limit) || 20, 100);
     const page = Math.max(parseInt(req.query.page) || 1, 1);
     const { status } = req.query;
@@ -587,11 +394,7 @@ router.get("/history", authMiddleware, async (req, res) => {
 
     const count = await Payment.countDocuments(query);
 
-    console.log(`[${req.id}] ✅ Payment history retrieved:`, {
-      count,
-      page,
-      limit,
-    });
+    console.log(`[${req.id}] ✅ Payment history retrieved`);
 
     res.json({
       success: true,
@@ -612,10 +415,7 @@ router.get("/history", authMiddleware, async (req, res) => {
 // ✅ Get payment status by reference
 router.get("/status/:reference", authMiddleware, async (req, res) => {
   try {
-    console.log(
-      `[${req.id}] 🔍 Checking payment status:`,
-      req.params.reference
-    );
+    console.log(`[${req.id}] 🔍 Checking payment status`);
 
     const account = await Account.findOne({ userId: req.user.id });
     const payment = await Payment.findOne({
@@ -630,7 +430,7 @@ router.get("/status/:reference", authMiddleware, async (req, res) => {
       });
     }
 
-    console.log(`[${req.id}] ✅ Payment status:`, payment.status);
+    console.log(`[${req.id}] ✅ Payment status retrieved`);
 
     res.json({
       success: true,
@@ -648,7 +448,7 @@ router.get("/status/:reference", authMiddleware, async (req, res) => {
 // ✅ Get single payment by ID
 router.get("/:id", authMiddleware, async (req, res) => {
   try {
-    console.log(`[${req.id}] 🔍 Fetching payment:`, req.params.id);
+    console.log(`[${req.id}] 🔍 Fetching payment`);
 
     const account = await Account.findOne({ userId: req.user.id });
     const payment = await Payment.findOne({
@@ -675,70 +475,6 @@ router.get("/:id", authMiddleware, async (req, res) => {
       success: false,
       message: err.message,
     });
-  }
-});
-
-// ✅ Cancel pending payment
-router.patch("/:id/cancel", authMiddleware, async (req, res) => {
-  const session = await mongoose.startSession();
-  session.startTransaction();
-
-  try {
-    console.log(`[${req.id}] ❌ Cancelling payment:`, req.params.id);
-
-    const account = await Account.findOne({ userId: req.user.id }).session(
-      session
-    );
-    const payment = await Payment.findOne({
-      _id: req.params.id,
-      accountId: account._id,
-    }).session(session);
-
-    if (!payment) {
-      throw new Error("Payment not found");
-    }
-
-    if (payment.status !== "pending" && payment.status !== "processing") {
-      throw new Error("Cannot cancel this payment");
-    }
-
-    // Refund amount back to account
-    const refundAmount = payment.amount;
-    account.balance += refundAmount;
-    payment.status = "failed";
-
-    // Update transaction status
-    const transaction = await Transaction.findById(
-      payment.transactionId
-    ).session(session);
-    if (transaction) {
-      transaction.status = "cancelled";
-      await transaction.save({ session });
-    }
-
-    await account.save({ session });
-    await payment.save({ session });
-
-    await session.commitTransaction();
-
-    console.log(`[${req.id}] ✅ Payment cancelled - Refunded ₵${refundAmount}`);
-
-    res.json({
-      success: true,
-      message: "Payment cancelled successfully",
-      payment,
-      refundedAmount,
-      newBalance: account.balance,
-    });
-  } catch (err) {
-    await session.abortTransaction();
-    console.error(`[${req.id}] ❌ Payment cancellation error:`, err.message);
-    res.status(400).json({
-      success: false,
-      message: err.message,
-    });
-  } finally {
-    session.endSession();
   }
 });
 
