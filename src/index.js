@@ -144,7 +144,6 @@ app.use((req, res) => {
       health: "GET /api/health",
       auth: ["POST /api/auth/register", "POST /api/auth/login"],
       accounts: [
-        "GET /api/accounts/getUserAccount",
         "POST /api/accounts/setup",
         "GET /api/accounts/check",
         "GET /api/accounts/details",

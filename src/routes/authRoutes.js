@@ -10,6 +10,7 @@ import nodemailer from "nodemailer";
 const router = express.Router();
 
 // ✅ Setup email transporter (BREVO)
+// Note: SMTP_USER should be the FULL login like: 890bb6001@smtp-brevo.com
 const transporter = nodemailer.createTransport({
   host: "smtp-relay.brevo.com",
   port: 587,
@@ -231,11 +232,15 @@ router.post("/register", async (req, res) => {
       });
     }
 
-    const profileImage = `https://api.dicebear.com/6.x/initials/svg?seed=${username}`;
+    // ✅ FIX: Encode username for URL
+    const profileImage = `https://api.dicebear.com/6.x/initials/svg?seed=${encodeURIComponent(
+      username
+    )}`;
     const verificationCode = generateVerificationCode();
     const verificationCodeExpiresAt = new Date(Date.now() + 10 * 60 * 1000);
 
     console.log(`   Generated code: ${verificationCode}`);
+    console.log(`   Profile image URL: ${profileImage}`);
 
     const user = new User({
       username: username.toLowerCase(),
@@ -575,6 +580,7 @@ router.get("/me", protectRoute, async (req, res) => {
     if (!user) {
       return res.status(404).json({
         success: false,
+        user,
         message: "User not found",
       });
     }
