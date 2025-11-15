@@ -26,6 +26,7 @@ const verifyPaystackSignature = (req) => {
 };
 
 // ✅ PAYSTACK: Initialize Payment/Transfer (Card, Wallet, Mobile Money)
+// ✅ PAYSTACK: Initialize Payment/Transfer (Card, Wallet, Mobile Money, Bank Transfer)
 router.post("/paystack/initialize", authMiddleware, async (req, res) => {
   try {
     const {
@@ -54,7 +55,7 @@ router.post("/paystack/initialize", authMiddleware, async (req, res) => {
       });
     }
 
-    // Only validate network for mobile money payments
+    // Validate based on payment method
     if (paymentMethod === "mobile_money") {
       if (!network || !["MTN", "VODAFONE", "TIGO"].includes(network)) {
         return res.status(400).json({
@@ -79,6 +80,14 @@ router.post("/paystack/initialize", authMiddleware, async (req, res) => {
       }
     }
 
+    // Validate bank transfer
+    if (paymentMethod === "transfer" && !recipientAccountNumber) {
+      return res.status(400).json({
+        success: false,
+        message: "Recipient account number is required for transfers",
+      });
+    }
+
     const account = await Account.findOne({ userId: req.user.id });
     if (!account) {
       return res.status(404).json({
@@ -96,14 +105,14 @@ router.post("/paystack/initialize", authMiddleware, async (req, res) => {
       description,
     };
 
-    // Only add mobile money specific metadata
+    // Mobile money metadata
     if (paymentMethod === "mobile_money") {
       metadata.network = network;
-      metadata.phoneNumber = phoneNumber; // ✅ Plain text - NO encryption
+      metadata.phoneNumber = phoneNumber;
     }
 
-    // Only add transfer specific metadata
-    if (paymentMethod === "transfer" || recipientAccountNumber) {
+    // Transfer metadata (bank)
+    if (paymentMethod === "transfer") {
       metadata.recipientAccountNumber = recipientAccountNumber;
     }
 
