@@ -23,21 +23,21 @@ router.get("/details", authMiddleware, async (req, res) => {
     const account = await Account.findOne({ userId: req.user.id });
 
     if (!account) {
-      console.log(`[${req.id}] ❌ Account not found for user:`, req.user.id);
+      console.log(`[${req.id}]  Account not found for user:`, req.user.id);
       return res.status(404).json({
         success: false,
         message: "Account not found",
       });
     }
 
-    console.log(`[${req.id}] ✅ Account found:`, account.accountNumber);
+    console.log(`[${req.id}]  Account found:`, account.accountNumber);
 
     res.json({
       success: true,
       account,
     });
   } catch (err) {
-    console.error(`[${req.id}] ❌ Error fetching account:`, err.message);
+    console.error(`[${req.id}] Error fetching account:`, err.message);
     res.status(500).json({
       success: false,
       message: err.message,
@@ -84,7 +84,7 @@ router.post("/setup", authMiddleware, async (req, res) => {
       monthlyIncome,
     } = req.body;
 
-    console.log(`[${req.id}] 📝 Setting up account for user:`, req.user.id);
+    console.log(`[${req.id}]  Setting up account for user:`, req.user.id);
 
     // ✅ Validate phone number if provided
     if (phoneNumber) {
@@ -200,7 +200,7 @@ router.post("/setup", authMiddleware, async (req, res) => {
     });
   } catch (err) {
     await session.abortTransaction();
-    console.error(`[${req.id}] ❌ Account setup error:`, err.message);
+    console.error(`[${req.id}] Account setup error:`, err.message);
     res.status(400).json({
       success: false,
       message: err.message,
@@ -291,7 +291,7 @@ router.put("/update", authMiddleware, async (req, res) => {
     });
   } catch (err) {
     await session.abortTransaction();
-    console.error(`[${req.id}] ❌ Update error:`, err.message);
+    console.error(`[${req.id}] Update error:`, err.message);
     res.status(400).json({
       success: false,
       message: err.message,

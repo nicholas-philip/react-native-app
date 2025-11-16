@@ -3,6 +3,7 @@ import "dotenv/config";
 import { connectDB } from "./lib/db.js";
 import authRoutes from "./routes/authRoutes.js";
 import authPayments from "./routes/authPayment.js";
+import authPaymentTransaction from "./routes/authPaymentTransaction.js";
 import authAccount from "./routes/authAccount.js";
 import authTransactions from "./routes/authTransactions.js";
 import authWallet from "./routes/authWallet.js";
@@ -119,14 +120,17 @@ app.get("/", (req, res) => {
       accounts: "GET/POST /api/accounts/*",
       transactions: "GET/POST /api/transactions/*",
       wallet: "GET /api/wallet/*",
-      payments: "POST /api/payments/*",
+      payments: "POST /api/payments/* (DEPOSIT - adds money)",
+      paymentTransaction:
+        "POST /api/payment-transaction/* (PAYMENT - sends money)",
     },
   });
 });
 
 // ✅ API ROUTES WITH RATE LIMITING
 app.use("/api/auth", authLimiter, authRoutes);
-app.use("/api/payments", paymentLimiter, authPayments);
+app.use("/api/payments", paymentLimiter, authPayments); // ✅ DEPOSIT ROUTE
+app.use("/api/payment-transaction", paymentLimiter, authPaymentTransaction); // ✅ PAYMENT ROUTE
 app.use("/api/accounts", authAccount);
 app.use("/api/transactions", authTransactions);
 app.use("/api/wallet", authWallet);
@@ -164,15 +168,20 @@ app.use((req, res) => {
         "GET /api/wallet/stats",
         "GET /api/wallet/recent",
       ],
-      payments: [
-        "POST /api/payments/initiate",
+      deposits: [
         "POST /api/payments/paystack/initialize",
         "POST /api/payments/paystack/verify/:reference",
         "POST /api/payments/paystack/webhook",
         "GET /api/payments/history",
         "GET /api/payments/status/:reference",
         "GET /api/payments/:id",
-        "PATCH /api/payments/:id/cancel",
+      ],
+      payments: [
+        "POST /api/payment-transaction/paystack/initialize",
+        "POST /api/payment-transaction/paystack/verify/:reference",
+        "GET /api/payment-transaction/history",
+        "GET /api/payment-transaction/status/:reference",
+        "GET /api/payment-transaction/:id",
       ],
     },
   });
@@ -234,6 +243,10 @@ const startServer = async () => {
       );
       console.log(`🔐 Security: Rate limiting and validation enabled`);
       console.log(`⏱️ Timeout: 60s (90s for email operations)`);
+      console.log(`💰 Deposit Route: /api/payments (CREDIT - adds money)`);
+      console.log(
+        `💳 Payment Route: /api/payment-transaction (DEBIT - sends money)`
+      );
 
       // Start cron job after server is ready
       if (process.env.NODE_ENV === "production") {

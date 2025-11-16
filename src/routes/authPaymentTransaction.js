@@ -1,4 +1,7 @@
-// =============== routes/authPayment.js (DEPOSIT ONLY) ===============
+// =============== routes/authPaymentTransaction.js ===============
+// This route handles PAYMENTS (money going OUT of your account to a recipient)
+// Use this ONLY when you have money in your account and want to send it to someone
+
 import express from "express";
 import axios from "axios";
 import Payment from "../models/Payment.js";
@@ -11,30 +14,24 @@ import {
   validateAmount,
   validatePhoneNumber,
 } from "../utils/helpers.js";
-import crypto from "crypto";
 
 const router = express.Router();
 
-// ✅ VERIFY Paystack webhook signature
-const verifyPaystackSignature = (req) => {
-  const hash = crypto
-    .createHmac("sha512", process.env.PAYSTACK_SECRET_KEY)
-    .update(JSON.stringify(req.body))
-    .digest("hex");
-
-  return hash === req.headers["x-paystack-signature"];
-};
-
-// ✅ DEPOSIT: Initialize Paystack (CREDIT account - Add money)
+// ✅ PAYMENT: Initialize Paystack (DEBIT account - Send money)
 router.post("/paystack/initialize", authMiddleware, async (req, res) => {
   try {
-    const { amount, email, phoneNumber, network, paymentMethod, description } =
-      req.body;
+    const {
+      amount,
+      email,
+      paymentMethod, // "card", "wallet", or "mobile_money"
+      recipient, // { name, phone?, network? }
+      description,
+    } = req.body;
 
-    console.log(`[${req.id}] 💰 Deposit initialization:`, {
+    console.log(`[${req.id}] 💳 Payment initialization:`, {
       amount,
       paymentMethod,
-      network,
+      recipientName: recipient?.name,
     });
 
     // ✅ VALIDATE AMOUNT
@@ -46,31 +43,6 @@ router.post("/paystack/initialize", authMiddleware, async (req, res) => {
       });
     }
 
-    // ✅ VALIDATE MOBILE MONEY
-    if (paymentMethod === "mobile_money") {
-      if (!network || !["MTN", "VODAFONE", "TIGO"].includes(network)) {
-        return res.status(400).json({
-          success: false,
-          message: "Invalid network. Must be MTN, VODAFONE, or TIGO",
-        });
-      }
-
-      if (!phoneNumber) {
-        return res.status(400).json({
-          success: false,
-          message: "Phone number is required for mobile money",
-        });
-      }
-
-      const phoneValidation = validatePhoneNumber(phoneNumber);
-      if (!phoneValidation.valid) {
-        return res.status(400).json({
-          success: false,
-          message: phoneValidation.error,
-        });
-      }
-    }
-
     // ✅ GET ACCOUNT
     const account = await Account.findOne({ userId: req.user.id });
     if (!account) {
@@ -78,6 +50,16 @@ router.post("/paystack/initialize", authMiddleware, async (req, res) => {
         success: false,
         message: "Account not found",
       });
+    }
+
+    // ✅ CHECK BALANCE FOR WALLET PAYMENTS
+    if (paymentMethod === "wallet") {
+      if (account.balance < validatedAmount.amount) {
+        return res.status(400).json({
+          success: false,
+          message: `Insufficient balance. You have ₵${account.balance} but need ₵${validatedAmount.amount}`,
+        });
+      }
     }
 
     console.log(`[${req.id}] 📊 Account found:`, account.accountNumber);
@@ -88,13 +70,9 @@ router.post("/paystack/initialize", authMiddleware, async (req, res) => {
       accountNumber: account.accountNumber,
       paymentMethod,
       description,
-      transactionType: "deposit", // ✅ ALWAYS deposit
+      recipientName: recipient?.name || "Payment",
+      transactionType: "payment", // ✅ ALWAYS payment
     };
-
-    if (paymentMethod === "mobile_money") {
-      metadata.network = network;
-      metadata.phoneNumber = phoneNumber;
-    }
 
     // ✅ INITIALIZE PAYSTACK
     const paystackResponse = await axios.post(
@@ -118,7 +96,7 @@ router.post("/paystack/initialize", authMiddleware, async (req, res) => {
 
     res.json({
       success: true,
-      message: "Deposit initialization successful",
+      message: "Payment initialization successful",
       authorizationUrl: paystackResponse.data.data.authorization_url,
       reference: paystackResponse.data.data.reference,
     });
@@ -126,12 +104,12 @@ router.post("/paystack/initialize", authMiddleware, async (req, res) => {
     console.error(`[${req.id}] ❌ Paystack init error:`, err.message);
     res.status(400).json({
       success: false,
-      message: "Failed to initialize deposit",
+      message: "Failed to initialize payment",
     });
   }
 });
 
-// ✅ DEPOSIT: Verify Payment (CREDITS account)
+// ✅ PAYMENT: Verify Payment (DEBITS account)
 router.post("/paystack/verify/:reference", authMiddleware, async (req, res) => {
   const session = await mongoose.startSession();
   session.startTransaction();
@@ -139,7 +117,7 @@ router.post("/paystack/verify/:reference", authMiddleware, async (req, res) => {
   try {
     const { reference } = req.params;
 
-    console.log(`[${req.id}] 🔄 Verifying deposit:`, reference);
+    console.log(`[${req.id}] 🔄 Verifying payment:`, reference);
 
     // ✅ VERIFY WITH PAYSTACK
     const paystackResponse = await axios.get(
@@ -155,7 +133,7 @@ router.post("/paystack/verify/:reference", authMiddleware, async (req, res) => {
       await session.abortTransaction();
       return res.status(400).json({
         success: false,
-        message: "Deposit verification failed",
+        message: "Payment verification failed",
         status: paystackResponse.data.data.status,
       });
     }
@@ -183,14 +161,19 @@ router.post("/paystack/verify/:reference", authMiddleware, async (req, res) => {
       await session.commitTransaction();
       return res.status(201).json({
         success: true,
-        message: "Deposit already processed",
+        message: "Payment already processed",
         payment: existingPayment,
         newBalance: account.balance,
       });
     }
 
-    // ✅ DEPOSIT: CREDIT ACCOUNT
-    console.log(`[${req.id}] 💰 Processing DEPOSIT - CREDITING account`);
+    // ✅ PAYMENT: DEBIT ACCOUNT
+    console.log(`[${req.id}] 💳 Processing PAYMENT - DEBITING account`);
+
+    // Double-check balance
+    if (account.balance < amount) {
+      throw new Error("Insufficient balance for payment");
+    }
 
     const payment = new Payment({
       accountId: account._id,
@@ -199,32 +182,31 @@ router.post("/paystack/verify/:reference", authMiddleware, async (req, res) => {
       currency: account.currency,
       status: "completed",
       recipient: {
-        name: "Mobile Money Deposit",
-        network: paystackData.metadata.network,
-        phone: paystackData.metadata.phoneNumber,
+        name: paystackData.metadata.recipientName || "Payment",
       },
       paymentReference: reference,
       processedAt: new Date(),
     });
 
     const balanceBefore = account.balance;
-    account.balance += amount; // ✅ ADD for deposit
+    account.balance -= amount; // ✅ SUBTRACT for payment
     const balanceAfter = account.balance;
 
     const transaction = new Transaction({
       accountId: account._id,
-      type: "deposit",
+      type: "payment",
       amount,
       currency: account.currency,
       status: "completed",
-      description: `Deposit via ${paymentMethod}`,
+      description:
+        paystackData.metadata.description ||
+        `Payment to ${paystackData.metadata.recipientName}`,
       balanceBefore,
       balanceAfter,
       reference,
       metadata: {
+        paymentMethod,
         paystackReference: reference,
-        network: paystackData.metadata.network,
-        phoneNumber: paystackData.metadata.phoneNumber,
         ipAddress: req.ip,
         userAgent: req.get("user-agent"),
       },
@@ -239,11 +221,11 @@ router.post("/paystack/verify/:reference", authMiddleware, async (req, res) => {
 
     await session.commitTransaction();
 
-    console.log(`[${req.id}] ✅ Deposit completed successfully`);
+    console.log(`[${req.id}] ✅ Payment completed successfully`);
 
     return res.status(201).json({
       success: true,
-      message: "Deposit completed successfully",
+      message: "Payment completed successfully",
       payment,
       newBalance: account.balance,
     });
@@ -256,30 +238,6 @@ router.post("/paystack/verify/:reference", authMiddleware, async (req, res) => {
     });
   } finally {
     session.endSession();
-  }
-});
-
-// ✅ WEBHOOK
-router.post("/paystack/webhook", express.json(), (req, res) => {
-  try {
-    if (!verifyPaystackSignature(req)) {
-      console.error("[WEBHOOK] ❌ Invalid signature");
-      return res.status(401).json({
-        success: false,
-        message: "Invalid signature",
-      });
-    }
-
-    const event = req.body;
-    console.log("[WEBHOOK] ✅ Event received:", event.event);
-
-    res.json({ success: true });
-  } catch (err) {
-    console.error("[WEBHOOK] ❌ Error:", err.message);
-    res.status(500).json({
-      success: false,
-      message: "Webhook processing failed",
-    });
   }
 });
 
@@ -298,23 +256,22 @@ router.get("/history", authMiddleware, async (req, res) => {
 
     const limit = Math.min(parseInt(req.query.limit) || 20, 100);
     const page = Math.max(parseInt(req.query.page) || 1, 1);
-    const { status } = req.query;
 
-    const query = { accountId: account._id };
-    if (status) query.status = status;
+    // Only show payment type transactions
+    const query = { accountId: account._id, type: "payment" };
 
-    const payments = await Payment.find(query)
+    const transactions = await Transaction.find(query)
       .sort({ createdAt: -1 })
       .limit(limit)
       .skip((page - 1) * limit);
 
-    const count = await Payment.countDocuments(query);
+    const count = await Transaction.countDocuments(query);
 
-    console.log(`[${req.id}] ✅ History retrieved`);
+    console.log(`[${req.id}] ✅ Payment history retrieved`);
 
     res.json({
       success: true,
-      payments,
+      transactions,
       totalPages: Math.ceil(count / limit),
       currentPage: page,
       total: count,
