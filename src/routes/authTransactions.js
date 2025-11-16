@@ -1,9 +1,8 @@
-// =============== routes/authTransactions.js (PAYSTACK TRANSFER) ===============
+// =============== routes/authTransactions.js (CLEAN FIX) ===============
 import express from "express";
 import mongoose from "mongoose";
 import Transaction from "../models/Transaction.js";
 import Account from "../models/Account.js";
-import Payment from "../models/Payment.js";
 import authMiddleware from "../middleware/auth.js";
 import { generateReference, validateAmount } from "../utils/helpers.js";
 
@@ -204,23 +203,16 @@ router.post("/withdraw", authMiddleware, async (req, res) => {
   }
 });
 
-// ✅ TRANSFER money to another account (PAYSTACK VERIFIED)
-// ✅ TRANSFER money - BANK ACCOUNT or MOBILE MONEY
+// ✅ TRANSFER money - MOBILE MONEY ONLY (Paystack verified)
+// For bank transfers, use /payments/paystack/initialize + /payments/paystack/verify
 router.post("/transfer", authMiddleware, async (req, res) => {
   const session = await mongoose.startSession();
   session.startTransaction();
 
   try {
-    const {
-      reference,
-      amount,
-      description,
-      recipientAccountNumber, // For bank transfers
-      phoneNumber, // For mobile money transfers
-      network, // For mobile money transfers
-    } = req.body;
+    const { reference, amount, description, phoneNumber, network } = req.body;
 
-    console.log(`[${req.id}] 🔄 Processing transfer`);
+    console.log(`[${req.id}] 📱 Processing mobile money transfer`);
 
     const validatedAmount = validateAmount(amount);
     if (!validatedAmount.valid) {
@@ -231,30 +223,12 @@ router.post("/transfer", authMiddleware, async (req, res) => {
       throw new Error("Paystack reference is required");
     }
 
-    // Determine transfer type
-    const isBank = !!recipientAccountNumber;
-    const isMoMo = !!phoneNumber && !!network;
-
-    if (!isBank && !isMoMo) {
-      throw new Error(
-        "Either recipientAccountNumber (for bank) or phoneNumber + network (for mobile money) is required"
-      );
+    if (!phoneNumber || !network) {
+      throw new Error("Phone number and network are required for transfers");
     }
 
-    // Validate inputs based on transfer type
-    if (isBank && !recipientAccountNumber) {
-      throw new Error(
-        "Recipient account number is required for bank transfers"
-      );
-    }
-
-    if (isMoMo) {
-      if (!phoneNumber) {
-        throw new Error("Phone number is required for mobile money transfers");
-      }
-      if (!network || !["MTN", "VODAFONE", "TIGO"].includes(network)) {
-        throw new Error("Valid network is required (MTN, VODAFONE, or TIGO)");
-      }
+    if (!["MTN", "VODAFONE", "TIGO"].includes(network)) {
+      throw new Error("Valid network is required (MTN, VODAFONE, or TIGO)");
     }
 
     // Get sender account
@@ -275,39 +249,6 @@ router.post("/transfer", authMiddleware, async (req, res) => {
       throw new Error("Insufficient funds");
     }
 
-    let recipientAccount = null;
-
-    // ✅ BANK TRANSFER
-    if (isBank) {
-      console.log(
-        `[${req.id}] 🏦 Processing bank transfer to ${recipientAccountNumber}`
-      );
-
-      recipientAccount = await Account.findOne({
-        accountNumber: recipientAccountNumber,
-      }).session(session);
-
-      if (!recipientAccount) {
-        throw new Error("Recipient account not found");
-      }
-
-      if (recipientAccount.status !== "active") {
-        throw new Error("Recipient account is not active");
-      }
-
-      if (senderAccount.accountNumber === recipientAccountNumber) {
-        throw new Error("Cannot transfer to same account");
-      }
-    }
-    // ✅ MOBILE MONEY TRANSFER - just debit sender (recipient gets it from mobile money provider)
-    else if (isMoMo) {
-      console.log(
-        `[${req.id}] 📱 Processing mobile money transfer to ${phoneNumber} (${network})`
-      );
-      // For mobile money, we don't have a recipient account in our system
-      // The money goes to the mobile money provider, not our system
-    }
-
     // Check for existing transfer (idempotency)
     const existingTransfer = await Transaction.findOne({
       reference,
@@ -324,9 +265,7 @@ router.post("/transfer", authMiddleware, async (req, res) => {
       });
     }
 
-    const transferRef = reference || generateReference("transfer");
-
-    // ✅ DEBIT SENDER
+    // Debit sender (money goes to mobile money provider)
     const senderBalanceBefore = senderAccount.balance;
     senderAccount.balance -= validatedAmount.amount;
     const senderBalanceAfter = senderAccount.balance;
@@ -342,17 +281,14 @@ router.post("/transfer", authMiddleware, async (req, res) => {
       currency: senderAccount.currency,
       status: "completed",
       description:
-        description ||
-        (isBank
-          ? `Transfer to ${recipientAccountNumber}`
-          : `Transfer to ${phoneNumber} (${network})`),
+        description || `Mobile money transfer to ${phoneNumber} (${network})`,
       balanceBefore: senderBalanceBefore,
       balanceAfter: senderBalanceAfter,
-      reference: transferRef,
+      reference,
       metadata: {
-        transferType: isBank ? "bank" : "mobile_money",
-        ...(isBank && { recipientAccountNumber }),
-        ...(isMoMo && { phoneNumber, network }),
+        transferType: "mobile_money",
+        phoneNumber,
+        network,
         paystackReference: reference,
         ipAddress: req.ip,
         userAgent: req.get("user-agent"),
@@ -360,98 +296,23 @@ router.post("/transfer", authMiddleware, async (req, res) => {
       completedAt: new Date(),
     });
 
-    // ✅ CREATE PAYMENT RECORD FOR SENDER
-    const senderPayment = new Payment({
-      accountId: senderAccount._id,
-      paymentMethod: isBank ? "transfer" : "mobile_money",
-      amount: validatedAmount.amount,
-      currency: senderAccount.currency,
-      status: "completed",
-      recipient: {
-        ...(isBank && { accountNumber: recipientAccountNumber }),
-        ...(isMoMo && { phone: phoneNumber, network }),
-      },
-      paymentReference: transferRef,
-      transactionId: senderTransaction._id,
-      processedAt: new Date(),
-    });
-
     await senderAccount.save({ session });
     await senderTransaction.save({ session });
-    await senderPayment.save({ session });
-
-    // ✅ CREDIT RECIPIENT (only for bank transfers)
-    if (isBank && recipientAccount) {
-      const recipientBalanceBefore = recipientAccount.balance;
-      recipientAccount.balance += validatedAmount.amount;
-      const recipientBalanceAfter = recipientAccount.balance;
-
-      console.log(
-        `[${req.id}] 💳 Recipient balance: ${recipientBalanceBefore} → ${recipientBalanceAfter}`
-      );
-
-      const recipientTransaction = new Transaction({
-        accountId: recipientAccount._id,
-        type: "transfer_in",
-        amount: validatedAmount.amount,
-        currency: recipientAccount.currency,
-        status: "completed",
-        description:
-          description || `Transfer from ${senderAccount.accountNumber}`,
-        balanceBefore: recipientBalanceBefore,
-        balanceAfter: recipientBalanceAfter,
-        reference: transferRef,
-        metadata: {
-          transferType: "bank",
-          senderAccountNumber: senderAccount.accountNumber,
-          paystackReference: reference,
-          ipAddress: req.ip,
-          userAgent: req.get("user-agent"),
-        },
-        completedAt: new Date(),
-      });
-
-      const recipientPayment = new Payment({
-        accountId: recipientAccount._id,
-        paymentMethod: "transfer",
-        amount: validatedAmount.amount,
-        currency: recipientAccount.currency,
-        status: "completed",
-        recipient: {
-          accountNumber: senderAccount.accountNumber,
-        },
-        paymentReference: transferRef,
-        transactionId: recipientTransaction._id,
-        processedAt: new Date(),
-      });
-
-      await recipientAccount.save({ session });
-      await recipientTransaction.save({ session });
-      await recipientPayment.save({ session });
-    }
 
     await session.commitTransaction();
 
-    console.log(`[${req.id}] ✅ Transfer completed successfully`);
+    console.log(`[${req.id}] ✅ Mobile money transfer completed`);
 
     res.status(201).json({
       success: true,
       message: "Transfer completed successfully",
       transaction: senderTransaction,
       newBalance: senderAccount.balance,
-      transferType: isBank ? "bank" : "mobile_money",
-      ...(isBank && {
-        recipient: {
-          accountNumber: recipientAccount.accountNumber,
-          received: validatedAmount.amount,
-        },
-      }),
-      ...(isMoMo && {
-        recipient: {
-          phone: phoneNumber,
-          network,
-        },
-      }),
+      transferType: "mobile_money",
+      recipient: {
+        phone: phoneNumber,
+        network,
+      },
     });
   } catch (err) {
     await session.abortTransaction();

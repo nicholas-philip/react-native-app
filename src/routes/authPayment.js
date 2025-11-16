@@ -154,7 +154,7 @@ router.post("/paystack/initialize", authMiddleware, async (req, res) => {
   }
 });
 
-// ✅ PAYSTACK: Verify Payment
+// ✅ PAYSTACK: Verify Payment (handles card, wallet, mobile_money, bank_transfer)
 router.post("/paystack/verify/:reference", authMiddleware, async (req, res) => {
   const session = await mongoose.startSession();
   session.startTransaction();
@@ -329,6 +329,131 @@ router.post("/paystack/verify/:reference", authMiddleware, async (req, res) => {
         success: true,
         message: "Deposit completed successfully",
         payment,
+        newBalance: account.balance,
+      });
+    }
+
+    // ✅ BANK TRANSFER (from payment endpoint - Paystack verified)
+    if (paymentMethod === "transfer") {
+      console.log(`[${req.id}] 🏦 Processing bank transfer via Paystack`);
+
+      const recipientAccountNumber =
+        paystackData.metadata.recipientAccountNumber;
+
+      // Find recipient account
+      const recipientAccount = await Account.findOne({
+        accountNumber: recipientAccountNumber,
+      }).session(session);
+
+      if (!recipientAccount) {
+        throw new Error("Recipient account not found");
+      }
+
+      if (recipientAccount.status !== "active") {
+        throw new Error("Recipient account is not active");
+      }
+
+      if (account.accountNumber === recipientAccountNumber) {
+        throw new Error("Cannot transfer to same account");
+      }
+
+      // Debit sender
+      const senderBalanceBefore = account.balance;
+      account.balance -= amount;
+      const senderBalanceAfter = account.balance;
+
+      // Credit recipient
+      const recipientBalanceBefore = recipientAccount.balance;
+      recipientAccount.balance += amount;
+      const recipientBalanceAfter = recipientAccount.balance;
+
+      // Sender transaction
+      const senderTransaction = new Transaction({
+        accountId: account._id,
+        type: "transfer_out",
+        amount,
+        currency: account.currency,
+        status: "completed",
+        description: `Bank transfer to ${recipientAccountNumber}`,
+        balanceBefore: senderBalanceBefore,
+        balanceAfter: senderBalanceAfter,
+        reference,
+        metadata: {
+          transferType: "bank",
+          recipientAccountNumber,
+          paystackReference: paystackData.reference,
+          ipAddress: req.ip,
+          userAgent: req.get("user-agent"),
+        },
+        completedAt: new Date(),
+      });
+
+      // Recipient transaction
+      const recipientTransaction = new Transaction({
+        accountId: recipientAccount._id,
+        type: "transfer_in",
+        amount,
+        currency: recipientAccount.currency,
+        status: "completed",
+        description: `Bank transfer from ${account.accountNumber}`,
+        balanceBefore: recipientBalanceBefore,
+        balanceAfter: recipientBalanceAfter,
+        reference,
+        metadata: {
+          transferType: "bank",
+          senderAccountNumber: account.accountNumber,
+          paystackReference: paystackData.reference,
+          ipAddress: req.ip,
+          userAgent: req.get("user-agent"),
+        },
+        completedAt: new Date(),
+      });
+
+      // Sender payment
+      const senderPayment = new Payment({
+        accountId: account._id,
+        paymentMethod: "transfer",
+        amount,
+        currency: account.currency,
+        status: "completed",
+        recipient: {
+          accountNumber: recipientAccountNumber,
+        },
+        paymentReference: reference,
+        transactionId: senderTransaction._id,
+        processedAt: new Date(),
+      });
+
+      // Recipient payment
+      const recipientPayment = new Payment({
+        accountId: recipientAccount._id,
+        paymentMethod: "transfer",
+        amount,
+        currency: recipientAccount.currency,
+        status: "completed",
+        recipient: {
+          accountNumber: account.accountNumber,
+        },
+        paymentReference: reference,
+        transactionId: recipientTransaction._id,
+        processedAt: new Date(),
+      });
+
+      await account.save({ session });
+      await recipientAccount.save({ session });
+      await senderTransaction.save({ session });
+      await recipientTransaction.save({ session });
+      await senderPayment.save({ session });
+      await recipientPayment.save({ session });
+
+      await session.commitTransaction();
+
+      console.log(`[${req.id}] ✅ Bank transfer completed`);
+
+      return res.status(201).json({
+        success: true,
+        message: "Bank transfer completed successfully",
+        transaction: senderTransaction,
         newBalance: account.balance,
       });
     }
