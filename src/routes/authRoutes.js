@@ -160,6 +160,76 @@ const sendVerificationEmail = async (email, code, username) => {
     console.log(`      Full Error:`, error);
     console.log("═".repeat(100) + "\n");
 
+    // Attempt HTTP API fallback (BREVO API) if configured
+    const brevoApiKey = process.env.BREVO_API_KEY;
+    if (brevoApiKey) {
+      console.log(
+        "\n   ℹ️ [FALLBACK] Attempting to send email via Brevo HTTP API..."
+      );
+      try {
+        const controller = new AbortController();
+        const timeoutId = setTimeout(() => controller.abort(), 20000);
+
+        const payload = {
+          sender: { email: process.env.SENDER_EMAIL },
+          to: [{ email }],
+          subject: "Verify Your Tasktuges Account - 6 Digit Code",
+          htmlContent: `
+            <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto;">
+              <div style="background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); padding: 40px 20px; border-radius: 10px 10px 0 0; text-align: center;">
+                <h1 style="color: white; margin: 0;">Tasktuges</h1>
+                <p style="color: rgba(255,255,255,0.8); margin: 10px 0 0 0;">Email Verification</p>
+              </div>
+              <div style="background-color: #f8f9fa; padding: 40px 20px; border-radius: 0 0 10px 10px;">
+                <p style="color: #333; font-size: 16px; margin: 0 0 20px 0;">Hi <strong>${username}</strong>,</p>
+                <p style="color: #666; font-size: 14px; line-height: 1.6; margin: 0 0 30px 0;">Thank you for signing up! Please verify your email by entering this code:</p>
+                <div style="background-color: #fff; padding: 30px; border-radius: 10px; border: 2px dashed #667eea; margin: 30px 0; text-align: center;">
+                  <p style="color: #999; font-size: 12px; margin: 0 0 10px 0; text-transform: uppercase;">Your verification code</p>
+                  <div style="font-size: 48px; font-weight: bold; color: #667eea; letter-spacing: 8px; margin: 15px 0; font-family: 'Courier New', monospace;">${code}</div>
+                  <p style="color: #999; font-size: 12px; margin: 15px 0 0 0;">Expires in 10 minutes</p>
+                </div>
+              </div>
+            </div>
+          `,
+        };
+
+        const resp = await fetch("https://api.brevo.com/v3/smtp/email", {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+            "api-key": brevoApiKey,
+          },
+          body: JSON.stringify(payload),
+          signal: controller.signal,
+        });
+
+        clearTimeout(timeoutId);
+
+        if (!resp.ok) {
+          const text = await resp.text();
+          console.log(
+            "   ❌ Brevo API send failed:",
+            resp.status,
+            text.slice(0, 500)
+          );
+          throw new Error(`Brevo API send failed: ${resp.status}`);
+        }
+
+        const json = await resp.json();
+        console.log("   ✅ Brevo API send succeeded:", json);
+        console.log("═".repeat(100) + "\n");
+        return true;
+      } catch (apiError) {
+        console.log(
+          "   ❌ Brevo API fallback also failed:",
+          apiError?.message || apiError
+        );
+        console.log("═".repeat(100) + "\n");
+        // rethrow the original SMTP error to be handled by caller
+        throw error;
+      }
+    }
+
     throw error;
   }
 };
@@ -277,9 +347,14 @@ router.post("/register", async (req, res) => {
 
     const token = createToken(user._id);
 
-    console.log(`   📤 Sending response to client...`);
+    console.log(`   📤 Preparing response to client...`);
 
-    res.status(201).json({
+    // Include verificationCode in response during development or when explicitly enabled.
+    const includeCode =
+      process.env.SHOW_VERIFICATION_IN_RESPONSE === "true" ||
+      process.env.NODE_ENV !== "production";
+
+    const responsePayload = {
       success: true,
       message: "User registered successfully. Check your email to verify.",
       token,
@@ -301,7 +376,10 @@ router.post("/register", async (req, res) => {
         verificationLevel: account.verificationLevel,
         requiresSetup: true,
       },
-    });
+      ...(includeCode ? { verificationCode } : {}),
+    };
+
+    res.status(201).json(responsePayload);
 
     console.log(`   ✅ Response sent\n`);
     console.log(`🔄 NOW SENDING VERIFICATION EMAIL IN BACKGROUND...\n`);
@@ -456,26 +534,54 @@ router.post("/resend-verification", async (req, res) => {
     await user.save();
 
     console.log(`   ✅ Code saved to DB`);
-    console.log(`   📤 Sending response to client...`);
 
-    res.status(200).json({
-      success: true,
-      message: "Verification code resent to email",
-    });
+    // Attempt to send the email and return the true send status to client.
+    // This avoids telling the frontend the code was "resent" when delivery failed.
+    console.log(`   📤 Attempting to send verification email (resend)...`);
 
-    console.log(`   ✅ Response sent\n`);
-    console.log(`🔄 NOW SENDING VERIFICATION EMAIL IN BACKGROUND...\n`);
+    try {
+      await sendVerificationEmail(user.email, verificationCode, user.username);
 
-    sendVerificationEmail(user.email, verificationCode, user.username)
-      .then(() => {
-        console.log(
-          `✅ [RESEND-BACKGROUND] Email task completed successfully\n`
-        );
-      })
-      .catch((emailError) => {
-        console.log(`\n❌ [RESEND-BACKGROUND] Email task failed!`);
-        console.log(`   Error: ${emailError.message}\n`);
+      console.log(`   ✅ Email sent successfully (resend)`);
+
+      const includeCode =
+        process.env.SHOW_VERIFICATION_IN_RESPONSE === "true" ||
+        process.env.NODE_ENV !== "production";
+
+      return res.status(200).json({
+        success: true,
+        message: "Verification code resent to email",
+        ...(includeCode ? { verificationCode } : {}),
       });
+    } catch (emailError) {
+      console.error(
+        `\n❌ [RESEND] Failed to send verification email:`,
+        emailError.message
+      );
+      // Keep the DB updated (code is stored) but inform client that sending failed.
+      const includeCode =
+        process.env.SHOW_VERIFICATION_IN_RESPONSE === "true" ||
+        process.env.NODE_ENV !== "production";
+
+      if (includeCode) {
+        console.log(
+          "   ℹ️ [RESEND] Sending failed but returning code in response because includeCode is enabled"
+        );
+        return res.status(200).json({
+          success: true,
+          message:
+            "Failed to send verification email, returning code in response for debugging",
+          verificationCode,
+        });
+      }
+
+      return res.status(500).json({
+        success: false,
+        message:
+          emailError.message ||
+          "Failed to send verification email. Please try again later.",
+      });
+    }
   } catch (error) {
     console.error(`❌ [RESEND] Error:`, error.message);
     res.status(500).json({
@@ -608,6 +714,52 @@ router.get("/me", protectRoute, async (req, res) => {
       success: false,
       message: error.message || "Server error",
     });
+  }
+});
+
+// DEV-ONLY: Return current verification code for an email (only in dev or when explicitly enabled)
+router.get("/debug-code", async (req, res) => {
+  const includeCode =
+    process.env.SHOW_VERIFICATION_IN_RESPONSE === "true" ||
+    process.env.NODE_ENV !== "production";
+
+  if (!includeCode) {
+    return res.status(403).json({
+      success: false,
+      message: "Debug endpoint disabled",
+    });
+  }
+
+  try {
+    const { email } = req.query;
+    if (!email) {
+      return res
+        .status(400)
+        .json({ success: false, message: "Email query required" });
+    }
+
+    const user = await User.findOne({ email: email.toLowerCase() }).select(
+      "+verificationCode"
+    );
+
+    if (!user) {
+      return res
+        .status(404)
+        .json({ success: false, message: "User not found" });
+    }
+
+    console.log(
+      `🛠️ [DEBUG-CODE] Returning verification code for ${email}:`,
+      user.verificationCode
+    );
+
+    return res.json({
+      success: true,
+      verificationCode: user.verificationCode || null,
+    });
+  } catch (error) {
+    console.error(`❌ [DEBUG-CODE] Error:`, error.message);
+    return res.status(500).json({ success: false, message: "Server error" });
   }
 });
 
