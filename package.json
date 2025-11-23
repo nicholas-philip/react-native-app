@@ -5,7 +5,7 @@
   "main": "index.js",
   "scripts": {
     "dev": "nodemon src/index.js",
-    "test:email": "node lib/emailTest.js"
+    "test:email": "node src/lib/emailTest.js"
   },
   "keywords": [],
   "author": "",
