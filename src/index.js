@@ -22,24 +22,26 @@ app.use(helmet());
 app.use(express.json({ limit: "10mb" }));
 app.use(express.urlencoded({ limit: "10mb", extended: true }));
 
-// ✅ SET LONGER TIMEOUT FOR API REQUESTS (before routes)
+// ✅ GLOBAL TIMEOUT - DEFAULT 120 SECONDS
 app.use((req, res, next) => {
-  // Increase timeout from default 120s to 60s for most requests
-  req.setTimeout(60000); // 60 seconds
-  res.setTimeout(60000);
+  req.setTimeout(120000); // 120 seconds default
+  res.setTimeout(120000);
   next();
 });
 
-// ✅ SET LONGER TIMEOUT FOR SPECIFIC SLOW ROUTES
-app.post("/api/auth/resend-verification", (req, res, next) => {
-  req.setTimeout(90000); // 90 seconds for email operations
-  res.setTimeout(90000);
-  next();
-});
-
+// ✅ EXTENDED TIMEOUT FOR EMAIL OPERATIONS (REGISTER & RESEND)
+// These routes wait for email to send, so they need more time
 app.post("/api/auth/register", (req, res, next) => {
-  req.setTimeout(90000); // 90 seconds for email operations
-  res.setTimeout(90000);
+  console.log(`⏱️ [TIMEOUT] Setting 120s timeout for /register`);
+  req.setTimeout(120000); // 120 seconds for registration with email
+  res.setTimeout(120000);
+  next();
+});
+
+app.post("/api/auth/resend-verification", (req, res, next) => {
+  console.log(`⏱️ [TIMEOUT] Setting 120s timeout for /resend-verification`);
+  req.setTimeout(120000); // 120 seconds for resend with email
+  res.setTimeout(120000);
   next();
 });
 
@@ -237,16 +239,42 @@ const startServer = async () => {
 
     // ✅ Start the server
     const server = app.listen(PORT, () => {
-      console.log(`✅ Server running on port ${PORT}`);
+      console.log("\n" + "═".repeat(100));
+      console.log("✅ SERVER STARTED SUCCESSFULLY");
+      console.log("═".repeat(100));
+      console.log(`   Port: ${PORT}`);
       console.log(
-        `📍 Server URL: ${process.env.API_URL || `http://localhost:${PORT}`}`
+        `   URL: ${process.env.API_URL || `http://localhost:${PORT}`}`
       );
-      console.log(`🔐 Security: Rate limiting and validation enabled`);
-      console.log(`⏱️ Timeout: 60s (90s for email operations)`);
-      console.log(`💰 Deposit Route: /api/payments (CREDIT - adds money)`);
+      console.log(`   Environment: ${process.env.NODE_ENV || "development"}`);
+      console.log("\n🔐 SECURITY:");
+      console.log("   ✅ Helmet security headers enabled");
+      console.log("   ✅ Rate limiting enabled (100 req/15min globally)");
+      console.log("   ✅ Auth rate limiting (5 attempts/15min)");
+      console.log("   ✅ Payment rate limiting (10 req/1min)");
+      console.log("\n⏱️  TIMEOUTS:");
+      console.log("   ✅ Global timeout: 120 seconds");
+      console.log("   ✅ Email operations (/register, /resend): 120 seconds");
+      console.log("\n📧 EMAIL SERVICE:");
       console.log(
-        `💳 Payment Route: /api/payment-transaction (DEBIT - sends money)`
+        `   ✅ SMTP User: ${process.env.SMTP_USER ? "SET" : "NOT SET"}`
       );
+      console.log(
+        `   ✅ Sender Email: ${process.env.SENDER_EMAIL ? "SET" : "NOT SET"}`
+      );
+      console.log(
+        `   ✅ Dev Mode: ${
+          process.env.SHOW_VERIFICATION_IN_RESPONSE === "true"
+            ? "ENABLED"
+            : "DISABLED"
+        }`
+      );
+      console.log("\n💰 PAYMENT ROUTES:");
+      console.log("   ✅ Deposits: POST /api/payments/paystack/initialize");
+      console.log(
+        "   ✅ Payments: POST /api/payment-transaction/paystack/initialize"
+      );
+      console.log("\n" + "═".repeat(100) + "\n");
 
       // Start cron job after server is ready
       if (process.env.NODE_ENV === "production") {

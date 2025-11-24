@@ -10,7 +10,6 @@ import nodemailer from "nodemailer";
 const router = express.Router();
 
 // ✅ Setup email transporter (BREVO)
-// Note: SMTP_USER should be the FULL login like: 890bb6001@smtp-brevo.com
 const transporter = nodemailer.createTransport({
   host: "smtp-relay.brevo.com",
   port: 587,
@@ -82,17 +81,20 @@ const validateEmail = (email) => {
   return regex.test(email);
 };
 
-// ✅ SEND VERIFICATION EMAIL - DETAILED DEBUG LOGGING
+// ✅ SEND VERIFICATION EMAIL - WITH BETTER LOGGING
 const sendVerificationEmail = async (email, code, username) => {
   const startTime = Date.now();
 
   console.log("\n" + "═".repeat(100));
   console.log("📧 [EMAIL-SEND] Starting verification email process");
   console.log("═".repeat(100));
-  console.log(`   To: ${email}`);
-  console.log(`   Username: ${username}`);
-  console.log(`   Code: ${code}`);
-  console.log(`   From: ${process.env.SENDER_EMAIL}`);
+  console.log(`   TO: ${email}`);
+  console.log(`   USERNAME: ${username}`);
+  console.log(`   CODE: ${code}`);
+  console.log(`   FROM: ${process.env.SENDER_EMAIL}`);
+  console.log(
+    `   EXPIRES: ${new Date(Date.now() + 10 * 60 * 1000).toLocaleString()}`
+  );
   console.log(`   Timestamp: ${new Date().toISOString()}`);
 
   try {
@@ -115,6 +117,7 @@ const sendVerificationEmail = async (email, code, username) => {
               <div style="font-size: 48px; font-weight: bold; color: #667eea; letter-spacing: 8px; margin: 15px 0; font-family: 'Courier New', monospace;">${code}</div>
               <p style="color: #999; font-size: 12px; margin: 15px 0 0 0;">Expires in 10 minutes</p>
             </div>
+            <p style="color: #666; font-size: 13px; text-align: center;">If you didn't request this code, please ignore this email.</p>
           </div>
         </div>
       `,
@@ -149,7 +152,6 @@ const sendVerificationEmail = async (email, code, username) => {
     console.log(`      Error Name: ${error.name}`);
     console.log(`      Error Message: ${error.message}`);
     console.log(`      Error Code: ${error.code}`);
-    console.log(`      Error Command: ${error.command}`);
     console.log(`      Duration: ${duration}ms`);
     console.log(`\n   DEBUGGING INFO:`);
     console.log(`      Transporter Host: ${transporter.options?.host}`);
@@ -225,7 +227,6 @@ const sendVerificationEmail = async (email, code, username) => {
           apiError?.message || apiError
         );
         console.log("═".repeat(100) + "\n");
-        // rethrow the original SMTP error to be handled by caller
         throw error;
       }
     }
@@ -234,7 +235,7 @@ const sendVerificationEmail = async (email, code, username) => {
   }
 };
 
-// ✅ REGISTER ROUTE
+// ✅ REGISTER ROUTE - FIXED: WAIT FOR EMAIL BEFORE RESPONDING
 router.post("/register", async (req, res) => {
   const session = await mongoose.startSession();
   session.startTransaction();
@@ -302,7 +303,6 @@ router.post("/register", async (req, res) => {
       });
     }
 
-    // ✅ FIX: Encode username for URL
     const profileImage = `https://api.dicebear.com/6.x/initials/svg?seed=${encodeURIComponent(
       username
     )}`;
@@ -347,16 +347,30 @@ router.post("/register", async (req, res) => {
 
     const token = createToken(user._id);
 
-    console.log(`   📤 Preparing response to client...`);
+    // ✅ FIX: WAIT FOR EMAIL BEFORE RESPONDING
+    console.log(`\n📤 Sending verification email...`);
+    let emailSent = false;
+    let emailError = null;
 
-    // Include verificationCode in response during development or when explicitly enabled.
+    try {
+      await sendVerificationEmail(user.email, verificationCode, user.username);
+      emailSent = true;
+      console.log(`   ✅ Email sent successfully`);
+    } catch (error) {
+      emailError = error.message;
+      console.error(`   ❌ Email send failed: ${emailError}`);
+      // Continue anyway - user can resend
+    }
+
     const includeCode =
       process.env.SHOW_VERIFICATION_IN_RESPONSE === "true" ||
       process.env.NODE_ENV !== "production";
 
     const responsePayload = {
       success: true,
-      message: "User registered successfully. Check your email to verify.",
+      message: emailSent
+        ? "User registered successfully. Check your email to verify."
+        : "User created but email delivery failed. Check spam folder or resend the code.",
       token,
       user: {
         _id: user._id,
@@ -376,24 +390,15 @@ router.post("/register", async (req, res) => {
         verificationLevel: account.verificationLevel,
         requiresSetup: true,
       },
+      emailStatus: {
+        sent: emailSent,
+        error: emailError,
+      },
       ...(includeCode ? { verificationCode } : {}),
     };
 
     res.status(201).json(responsePayload);
-
-    console.log(`   ✅ Response sent\n`);
-    console.log(`🔄 NOW SENDING VERIFICATION EMAIL IN BACKGROUND...\n`);
-
-    sendVerificationEmail(user.email, verificationCode, user.username)
-      .then(() => {
-        console.log(
-          `✅ [REGISTER-BACKGROUND] Email task completed successfully\n`
-        );
-      })
-      .catch((emailError) => {
-        console.log(`\n❌ [REGISTER-BACKGROUND] Email task failed!`);
-        console.log(`   Error: ${emailError.message}\n`);
-      });
+    console.log(`   ✅ Response sent to client\n`);
   } catch (error) {
     await session.abortTransaction();
     console.error(`❌ [REGISTER] Registration error:`, error.message);
@@ -491,7 +496,7 @@ router.post("/verify-email", async (req, res) => {
   }
 });
 
-// ✅ RESEND VERIFICATION CODE
+// ✅ RESEND VERIFICATION CODE - FIXED: WAIT FOR EMAIL
 router.post("/resend-verification", async (req, res) => {
   try {
     const { email } = req.body;
@@ -535,53 +540,62 @@ router.post("/resend-verification", async (req, res) => {
 
     console.log(`   ✅ Code saved to DB`);
 
-    // Attempt to send the email and return the true send status to client.
-    // This avoids telling the frontend the code was "resent" when delivery failed.
+    // ✅ FIX: WAIT FOR EMAIL BEFORE RESPONDING
     console.log(`   📤 Attempting to send verification email (resend)...`);
+    let emailSent = false;
+    let emailError = null;
 
     try {
       await sendVerificationEmail(user.email, verificationCode, user.username);
-
+      emailSent = true;
       console.log(`   ✅ Email sent successfully (resend)`);
+    } catch (error) {
+      emailError = error.message;
+      console.error(`   ❌ Failed to send verification email: ${emailError}`);
+    }
 
-      const includeCode =
-        process.env.SHOW_VERIFICATION_IN_RESPONSE === "true" ||
-        process.env.NODE_ENV !== "production";
+    const includeCode =
+      process.env.SHOW_VERIFICATION_IN_RESPONSE === "true" ||
+      process.env.NODE_ENV !== "production";
 
+    // If email failed but we're in dev mode, still return success with code
+    if (!emailSent && includeCode) {
+      console.log(
+        "   ℹ️ [RESEND] Email failed but returning code for dev debugging"
+      );
+      return res.status(200).json({
+        success: true,
+        message:
+          "Code generated (email failed in dev mode, returning code in response)",
+        verificationCode,
+        emailStatus: {
+          sent: false,
+          error: emailError,
+        },
+      });
+    }
+
+    // If email sent, tell user it worked
+    if (emailSent) {
       return res.status(200).json({
         success: true,
         message: "Verification code resent to email",
+        emailStatus: {
+          sent: true,
+        },
         ...(includeCode ? { verificationCode } : {}),
       });
-    } catch (emailError) {
-      console.error(
-        `\n❌ [RESEND] Failed to send verification email:`,
-        emailError.message
-      );
-      // Keep the DB updated (code is stored) but inform client that sending failed.
-      const includeCode =
-        process.env.SHOW_VERIFICATION_IN_RESPONSE === "true" ||
-        process.env.NODE_ENV !== "production";
-
-      if (includeCode) {
-        console.log(
-          "   ℹ️ [RESEND] Sending failed but returning code in response because includeCode is enabled"
-        );
-        return res.status(200).json({
-          success: true,
-          message:
-            "Failed to send verification email, returning code in response for debugging",
-          verificationCode,
-        });
-      }
-
-      return res.status(500).json({
-        success: false,
-        message:
-          emailError.message ||
-          "Failed to send verification email. Please try again later.",
-      });
     }
+
+    // If email failed and we're in production, tell user
+    return res.status(500).json({
+      success: false,
+      message: "Failed to send verification email. Please try again later.",
+      emailStatus: {
+        sent: false,
+        error: emailError,
+      },
+    });
   } catch (error) {
     console.error(`❌ [RESEND] Error:`, error.message);
     res.status(500).json({
@@ -717,7 +731,7 @@ router.get("/me", protectRoute, async (req, res) => {
   }
 });
 
-// DEV-ONLY: Return current verification code for an email (only in dev or when explicitly enabled)
+// DEV-ONLY: Return current verification code for an email
 router.get("/debug-code", async (req, res) => {
   const includeCode =
     process.env.SHOW_VERIFICATION_IN_RESPONSE === "true" ||
