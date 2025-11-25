@@ -5,50 +5,8 @@ import Account from "../models/Account.js";
 import jwt from "jsonwebtoken";
 import protectRoute from "../middleware/authmiddleware.js";
 import mongoose from "mongoose";
-import nodemailer from "nodemailer";
 
 const router = express.Router();
-
-// ✅ Setup email transporter (BREVO)
-const transporter = nodemailer.createTransport({
-  host: "smtp-relay.brevo.com",
-  port: 587,
-  secure: false,
-  auth: {
-    user: process.env.SMTP_USER,
-    pass: process.env.SMTP_PASS,
-  },
-  connectionTimeout: 10000,
-  socketTimeout: 15000,
-  pool: {
-    maxConnections: 5,
-    maxMessages: 100,
-    rateDelta: 1000,
-    rateLimit: 10,
-  },
-});
-
-// Verify transporter on startup
-transporter.verify((error, success) => {
-  console.log("\n" + "═".repeat(100));
-  console.log("🔌 [TRANSPORTER-INIT] Email Service Initialization");
-  console.log("═".repeat(100));
-  console.log(`   SMTP_USER: ${process.env.SMTP_USER || "❌ NOT SET"}`);
-  console.log(`   SENDER_EMAIL: ${process.env.SENDER_EMAIL || "❌ NOT SET"}`);
-  console.log(`   Host: smtp-relay.brevo.com`);
-  console.log(`   Port: 587`);
-
-  if (error) {
-    console.log(`\n   ❌ TRANSPORTER ERROR:`);
-    console.log(`      Message: ${error.message}`);
-    console.log(`      Code: ${error.code}`);
-    console.log(`      Command: ${error.command}`);
-    console.log(`\n   ACTION REQUIRED: Check your Brevo credentials!`);
-  } else {
-    console.log(`\n   ✅ TRANSPORTER READY - Email service is working!`);
-  }
-  console.log("═".repeat(100) + "\n");
-});
 
 const createToken = (userId) => {
   return jwt.sign({ userId }, process.env.JWT_SECRET, {
@@ -81,7 +39,7 @@ const validateEmail = (email) => {
   return regex.test(email);
 };
 
-// ✅ SEND VERIFICATION EMAIL - WITH BETTER LOGGING
+// ✅ SEND VERIFICATION EMAIL - USING BREVO HTTP API (PRIMARY)
 const sendVerificationEmail = async (email, code, username) => {
   const startTime = Date.now();
 
@@ -98,11 +56,20 @@ const sendVerificationEmail = async (email, code, username) => {
   console.log(`   Timestamp: ${new Date().toISOString()}`);
 
   try {
-    const mailOptions = {
-      from: process.env.SENDER_EMAIL,
-      to: email,
+    // ✅ PRIMARY: Use Brevo HTTP API (more reliable on Render)
+    const brevoApiKey = process.env.BREVO_API_KEY;
+
+    if (!brevoApiKey) {
+      throw new Error("BREVO_API_KEY not configured");
+    }
+
+    console.log(`   ✅ Using Brevo HTTP API`);
+
+    const payload = {
+      sender: { email: process.env.SENDER_EMAIL, name: "Tasktuges" },
+      to: [{ email, name: username }],
       subject: "Verify Your Tasktuges Account - 6 Digit Code",
-      html: `
+      htmlContent: `
         <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto;">
           <div style="background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); padding: 40px 20px; border-radius: 10px 10px 0 0; text-align: center;">
             <h1 style="color: white; margin: 0;">Tasktuges</h1>
@@ -123,24 +90,30 @@ const sendVerificationEmail = async (email, code, username) => {
       `,
     };
 
-    console.log(`   ✅ Mail options prepared`);
-    console.log(`   📤 Attempting to send via nodemailer...`);
+    console.log(`   📤 Sending via Brevo HTTP API...`);
 
-    // Create timeout
-    const timeoutPromise = new Promise((_, reject) =>
-      setTimeout(() => reject(new Error("Email send timeout (20s)")), 20000)
-    );
-
-    // Send with timeout
-    const emailPromise = transporter.sendMail(mailOptions);
-    const info = await Promise.race([emailPromise, timeoutPromise]);
+    const response = await fetch("https://api.brevo.com/v3/smtp/email", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "api-key": brevoApiKey,
+      },
+      body: JSON.stringify(payload),
+    });
 
     const duration = Date.now() - startTime;
 
+    if (!response.ok) {
+      const errorData = await response.text();
+      console.error(`   ❌ Brevo API Error: ${response.status}`);
+      console.error(`   Response:`, errorData.slice(0, 200));
+      throw new Error(`Brevo API error: ${response.status}`);
+    }
+
+    const result = await response.json();
+
     console.log(`\n   ✅ EMAIL SENT SUCCESSFULLY!`);
-    console.log(`      Message ID: ${info.messageId}`);
-    console.log(`      Response: ${info.response}`);
-    console.log(`      Accepted: ${JSON.stringify(info.accepted)}`);
+    console.log(`      Message ID: ${result.messageId}`);
     console.log(`      Duration: ${duration}ms`);
     console.log("═".repeat(100) + "\n");
 
@@ -149,87 +122,9 @@ const sendVerificationEmail = async (email, code, username) => {
     const duration = Date.now() - startTime;
 
     console.log(`\n   ❌ EMAIL SEND FAILED!`);
-    console.log(`      Error Name: ${error.name}`);
-    console.log(`      Error Message: ${error.message}`);
-    console.log(`      Error Code: ${error.code}`);
+    console.log(`      Error: ${error.message}`);
     console.log(`      Duration: ${duration}ms`);
-    console.log(`\n   DEBUGGING INFO:`);
-    console.log(`      Transporter Host: ${transporter.options?.host}`);
-    console.log(`      Transporter Port: ${transporter.options?.port}`);
-    console.log(
-      `      Transporter Auth User: ${transporter.options?.auth?.user}`
-    );
-    console.log(`      Full Error:`, error);
     console.log("═".repeat(100) + "\n");
-
-    // Attempt HTTP API fallback (BREVO API) if configured
-    const brevoApiKey = process.env.BREVO_API_KEY;
-    if (brevoApiKey) {
-      console.log(
-        "\n   ℹ️ [FALLBACK] Attempting to send email via Brevo HTTP API..."
-      );
-      try {
-        const controller = new AbortController();
-        const timeoutId = setTimeout(() => controller.abort(), 20000);
-
-        const payload = {
-          sender: { email: process.env.SENDER_EMAIL },
-          to: [{ email }],
-          subject: "Verify Your Tasktuges Account - 6 Digit Code",
-          htmlContent: `
-            <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto;">
-              <div style="background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); padding: 40px 20px; border-radius: 10px 10px 0 0; text-align: center;">
-                <h1 style="color: white; margin: 0;">Tasktuges</h1>
-                <p style="color: rgba(255,255,255,0.8); margin: 10px 0 0 0;">Email Verification</p>
-              </div>
-              <div style="background-color: #f8f9fa; padding: 40px 20px; border-radius: 0 0 10px 10px;">
-                <p style="color: #333; font-size: 16px; margin: 0 0 20px 0;">Hi <strong>${username}</strong>,</p>
-                <p style="color: #666; font-size: 14px; line-height: 1.6; margin: 0 0 30px 0;">Thank you for signing up! Please verify your email by entering this code:</p>
-                <div style="background-color: #fff; padding: 30px; border-radius: 10px; border: 2px dashed #667eea; margin: 30px 0; text-align: center;">
-                  <p style="color: #999; font-size: 12px; margin: 0 0 10px 0; text-transform: uppercase;">Your verification code</p>
-                  <div style="font-size: 48px; font-weight: bold; color: #667eea; letter-spacing: 8px; margin: 15px 0; font-family: 'Courier New', monospace;">${code}</div>
-                  <p style="color: #999; font-size: 12px; margin: 15px 0 0 0;">Expires in 10 minutes</p>
-                </div>
-              </div>
-            </div>
-          `,
-        };
-
-        const resp = await fetch("https://api.brevo.com/v3/smtp/email", {
-          method: "POST",
-          headers: {
-            "Content-Type": "application/json",
-            "api-key": brevoApiKey,
-          },
-          body: JSON.stringify(payload),
-          signal: controller.signal,
-        });
-
-        clearTimeout(timeoutId);
-
-        if (!resp.ok) {
-          const text = await resp.text();
-          console.log(
-            "   ❌ Brevo API send failed:",
-            resp.status,
-            text.slice(0, 500)
-          );
-          throw new Error(`Brevo API send failed: ${resp.status}`);
-        }
-
-        const json = await resp.json();
-        console.log("   ✅ Brevo API send succeeded:", json);
-        console.log("═".repeat(100) + "\n");
-        return true;
-      } catch (apiError) {
-        console.log(
-          "   ❌ Brevo API fallback also failed:",
-          apiError?.message || apiError
-        );
-        console.log("═".repeat(100) + "\n");
-        throw error;
-      }
-    }
 
     throw error;
   }
